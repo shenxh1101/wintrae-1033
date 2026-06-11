@@ -135,6 +135,12 @@ export class IntentParser {
       return { intent: 'wrong_submit', flowType: 'wrongbook', entities: { parsed, raw: text }, confidence: parsed ? 10 : 5 };
     }
     if (step === 1) {
+      const parsed = parseWrongQuestion(text);
+      if (parsed) {
+        return { intent: 'wrong_submit', flowType: 'wrongbook', entities: { parsed, raw: text }, confidence: 10 };
+      }
+    }
+    if (step === 2) {
       const selectedTags = ERROR_TAGS.filter(tag => text.includes(tag));
       if (selectedTags.length > 0) {
         return { intent: 'wrong_error_tags', flowType: 'wrongbook', entities: { errorTags: selectedTags }, confidence: 10 };
@@ -145,11 +151,11 @@ export class IntentParser {
       }
       return { intent: 'wrong_error_tags_custom', flowType: 'wrongbook', entities: { customTag: text.trim() }, confidence: 8 };
     }
-    if (step === 2) {
+    if (step === 3) {
       const yes = keywordMatch(text, ['好', '来', '要', '开始', '可以', 'yes']);
       return { intent: yes ? 'wrong_do_similar' : 'wrong_skip_similar', flowType: yes ? 'wrongbook' : 'idle', entities: {}, confidence: 10 };
     }
-    if (step === 3) {
+    if (step === 4) {
       const ans = parseMCAnswer(text);
       return { intent: 'wrong_similar_answer', flowType: 'wrongbook', entities: { answer: ans ?? -1 }, confidence: 8 };
     }
@@ -160,7 +166,22 @@ export class IntentParser {
     const step = ctx.step ?? 0;
     if (step === 0) {
       const subjectName = findSubjectName(text, mockSubjects.map(s => s.name));
-      return { intent: 'recite_choose', flowType: 'recite', entities: { subjectName, raw: text }, confidence: 10 };
+      const chapters: string[] = [];
+      mockSubjects.forEach(subject => {
+        subject.chapters.forEach(bigChapter => {
+          if (text.includes(bigChapter.name)) {
+            chapters.push(bigChapter.name);
+          }
+          if (bigChapter.children) {
+            bigChapter.children.forEach(smallChapter => {
+              if (text.includes(smallChapter.name)) {
+                chapters.push(smallChapter.name);
+              }
+            });
+          }
+        });
+      });
+      return { intent: 'recite_choose', flowType: 'recite', entities: { subjectName, chapters, raw: text }, confidence: 10 };
     }
     if (step === 1) {
       return { intent: 'recite_chapters_selected', flowType: 'recite', entities: {}, confidence: 8 };
@@ -292,7 +313,36 @@ export class FlowController {
   static generateTodayTasksPreview(info: ExamInfo): StudyTask[] {
     const today = formatDate(new Date());
     const priorities: Array<StudyTask['priority']> = ['high', 'medium', 'low', 'high', 'medium'];
-    return info.subjects.slice(0, 4).map((subject, i) => ({
+    const subjects = info.subjects.slice(0, 4);
+    const totalMinutes = Math.round(info.dailyHours * 60);
+
+    const weightMap: Record<string, number> = {
+      '政治': 0.2,
+      '英语': 0.2,
+      '数学': 0.3,
+      '专业课': 0.3,
+    };
+
+    const hitWeightSum = subjects.reduce((sum, s) => sum + (weightMap[s] ?? 0), 0);
+    const unhitCount = subjects.filter(s => !weightMap[s]).length;
+    const fallbackWeight = unhitCount > 0 ? Math.max(0, (1 - hitWeightSum) / unhitCount) : 0;
+    const defaultWeight = 1 / subjects.length;
+
+    const durations = subjects.map(subject => {
+      const weight = weightMap[subject] ?? (unhitCount > 0 ? fallbackWeight : defaultWeight);
+      return Math.floor(totalMinutes * weight);
+    });
+
+    let assigned = durations.reduce((a, b) => a + b, 0);
+    let diff = totalMinutes - assigned;
+    let idx = 0;
+    while (diff > 0 && idx < durations.length) {
+      durations[idx] += 1;
+      diff -= 1;
+      idx += 1;
+    }
+
+    return subjects.map((subject, i) => ({
       id: uid('task-p-'),
       title: [
         `${subject}：第1-2章 基础概念通读`,
@@ -302,7 +352,7 @@ export class FlowController {
       ][i % 4],
       subject,
       date: today,
-      duration: Math.floor(info.dailyHours * 60 / info.subjects.length),
+      duration: durations[i],
       completed: false,
       priority: priorities[i],
     }));
@@ -393,7 +443,6 @@ export class FlowController {
       };
     }
     if (step === 2) {
-      const { wqId } = useAppStore.getState().flowState.context;
       let errorTags: ErrorTagType[] = [];
       
       if (intent.intent === 'wrong_error_tags') {
@@ -412,24 +461,27 @@ export class FlowController {
         }
       }
 
-      if (errorTags.length > 0 || intent.intent !== 'wrong_error_tags_skip') {
-        const store = useAppStore.getState();
-        const updated = store.wrongQuestions.map(wq =>
-          wq.id === wqId ? { ...wq, errorTags } : wq
+      const store = useAppStore.getState();
+      const wrongQuestions = store.wrongQuestions;
+      const latestWq = wrongQuestions.length > 0 ? wrongQuestions[wrongQuestions.length - 1] : null;
+      const wqId = latestWq?.id;
+
+      if (errorTags.length > 0 && latestWq) {
+        const updated = wrongQuestions.map((wq, idx) =>
+          idx === wrongQuestions.length - 1 ? { ...wq, errorTags } : wq
         );
         useAppStore.setState({ wrongQuestions: updated });
       }
 
-      const currentWq = useAppStore.getState().wrongQuestions.find(w => w.id === wqId);
-      const similar = FlowController.generateSimilarWithTags(
-        currentWq || { question: userText, options: [], errorTags: [] },
-        errorTags
-      );
+      const baseQuestion = latestWq || { question: userText, options: [], errorTags: [] };
+      const similar = errorTags.length > 0
+        ? FlowController.generateSimilarWithTags(baseQuestion, errorTags)
+        : FlowController.generateSimilar(baseQuestion);
       
-      if (similar.length > 0 && currentWq) {
-        const store = useAppStore.getState();
-        const updated = store.wrongQuestions.map(wq =>
-          wq.id === wqId ? { ...wq, similarQuestions: similar } : wq
+      if (similar.length > 0 && latestWq) {
+        const store2 = useAppStore.getState();
+        const updated = store2.wrongQuestions.map((wq, idx) =>
+          idx === store2.wrongQuestions.length - 1 ? { ...wq, similarQuestions: similar } : wq
         );
         useAppStore.setState({ wrongQuestions: updated });
       }
@@ -484,28 +536,28 @@ export class FlowController {
         const baseText = base.question.slice(0, 20);
         const tagSpecific: Record<ErrorTagType, { q: string; opts: string[] }> = {
           '概念混淆': {
-            q: `（概念辨析）关于「${baseText}...」相关概念，下列说法正确的是？`,
-            opts: base.options?.length ? base.options : ['A. 概念甲的定义', 'B. 概念乙的定义', 'C. 易混淆概念对比', 'D. 综合应用判断'],
+            q: `（概念辨析）下列关于「${baseText}」的说法，正确的是？`,
+            opts: base.options?.length ? base.options : ['A. 正确概念表述', 'B. 相似概念混淆', 'C. 概念外延错误', 'D. 概念内涵偏差'],
           },
           '审题失误': {
-            q: `（审题训练）仔细阅读：${base.question.slice(0, 50)}...下列理解正确的是？`,
-            opts: base.options?.length ? [...base.options].reverse() : ['A. 偷换概念选项', 'B. 以偏概全选项', 'C. 正确理解', 'D. 过度推断选项'],
+            q: `（审题训练）关于「${baseText}」，下列正确的是？（注意题干中的限定条件）`,
+            opts: base.options?.length ? [...base.options].reverse() : ['A. 偷换概念陷阱', 'B. 以偏概全陷阱', 'C. 正确表述', 'D. 答非所问陷阱'],
           },
           '计算错误': {
-            q: `（计算变式）同类计算：${baseText}...，计算结果是？`,
-            opts: base.options?.length ? base.options : ['A. 计算结果1', 'B. 计算结果2', 'C. 计算结果3', 'D. 计算结果4'],
+            q: `（计算变式）计算「${baseText}」的值是？`,
+            opts: base.options?.length ? base.options : ['A. 运算结果', 'B. 符号错误结果', 'C. 公式误用结果', 'D. 进位错误结果'],
           },
           '记忆疏漏': {
-            q: `（关键词回忆）填空：关于${baseText}...，核心关键词是？`,
-            opts: base.options?.length ? base.options : ['A. 关键词1', 'B. 关键词2', 'C. 关键词3', 'D. 关键词4'],
+            q: `（回忆题）「${baseText}」的核心内容/关键词是？`,
+            opts: base.options?.length ? base.options : ['A. 核心关键词', 'B. 邻近概念词', 'C. 易混淆词', 'D. 无关干扰词'],
           },
           '方法不当': {
-            q: `（方法优化）对于「${baseText}...」，最优解题方法是？`,
-            opts: base.options?.length ? base.options : ['A. 方法甲', 'B. 方法乙', 'C. 最优方法', 'D. 方法丁'],
+            q: `（方法论题）采用恰当方法解决「${baseText}」问题，最优方法是？`,
+            opts: base.options?.length ? base.options : ['A. 常规方法', 'B. 最优方法', 'C. 适用场景错误方法', 'D. 复杂度更高方法'],
           },
           '时间不足': {
-            q: `（快速解题）限时训练：${base.question.slice(0, 40)}...快速选出正确答案？`,
-            opts: base.options?.length ? base.options : ['A. 速解选项1', 'B. 速解选项2', 'C. 速解选项3', 'D. 速解选项4'],
+            q: `（快速解题）限时：快速解答「${baseText}」，选出正确答案？`,
+            opts: base.options?.length ? base.options : ['A. 速解结果', 'B. 估算干扰', 'C. 正确答案', 'D. 粗心错误结果'],
           },
           '其他': {
             q: `（变式练习）${base.question.slice(0, 30)}...的变式题，正确选项是？`,
@@ -555,11 +607,35 @@ export class FlowController {
     if (step === 1 || intent.intent === 'recite_choose') {
       const store = useAppStore.getState();
       const subjectName = ctx.subjectName || findSubjectName(userText, mockSubjects.map(s => s.name));
-      const pool = subjectName ? mockKnowledgePoints.filter(kp => kp.subject === subjectName) : mockKnowledgePoints;
+      const chapters = ctx.chapters as string[] | undefined;
+      
+      let pool = mockKnowledgePoints;
+      let introMsg = '';
+      
+      if (chapters && chapters.length > 0) {
+        pool = mockKnowledgePoints.filter(kp => chapters.includes(kp.chapter));
+        if (pool.length === 0 && subjectName) {
+          pool = mockKnowledgePoints.filter(kp => kp.subject === subjectName);
+          introMsg = `未找到章节「${chapters.join('、')}」的知识点，已按科目「${subjectName}」随机抽取。\n\n`;
+        } else if (pool.length > 0) {
+          introMsg = `已选中章节：${chapters.join('、')}，共 ${pool.length} 个知识点。\n\n`;
+          store.setSelectedChapters(chapters);
+        }
+      } else if (subjectName) {
+        pool = mockKnowledgePoints.filter(kp => kp.subject === subjectName);
+      }
+      
+      if (pool.length === 0) {
+        pool = mockKnowledgePoints;
+      }
+      
       const kp = pool[Math.floor(Math.random() * pool.length)];
-      store.setSelectedChapters([kp.chapter]);
+      if (!chapters || chapters.length === 0) {
+        store.setSelectedChapters([kp.chapter]);
+      }
+      
       return {
-        content: t.asking(kp.title),
+        content: `${introMsg}${t.asking(kp.title)}`,
         type: 'text',
         newFlow: { flow: 'recite', step: 2, context: { kpId: kp.id } },
       };

@@ -87,13 +87,21 @@ function generateInitialTasks(examInfo: ExamInfo): StudyTask[] {
     '专业课': 0.3,
   };
 
+  const hitWeightSum = examInfo.subjects.reduce((sum, s) => sum + (weightMap[s] ?? 0), 0);
+  const unhitCount = examInfo.subjects.filter(s => !weightMap[s]).length;
+  const fallbackWeight = unhitCount > 0 ? Math.max(0, (1 - hitWeightSum) / unhitCount) : 0;
+  const defaultWeight = 1 / examInfo.subjects.length;
+
   for (let day = 0; day < 14; day++) {
     const date = formatDate(addDays(today, day));
     let assignedMinutes = 0;
     const subjectMinutes: Record<string, number> = {};
 
     examInfo.subjects.forEach((subject, idx) => {
-      const weight = weightMap[subject] ?? (1 - Object.values(weightMap).reduce((a, b) => a + b, 0)) / Math.max(1, examInfo.subjects.length - 4);
+      let weight = weightMap[subject];
+      if (weight === undefined) {
+        weight = unhitCount > 0 ? fallbackWeight : defaultWeight;
+      }
       subjectMinutes[subject] = Math.round(totalMinutes * weight);
       assignedMinutes += subjectMinutes[subject];
     });
@@ -135,10 +143,10 @@ function generateInitialProgress(): WeeklyProgress[] {
   const weekDates2 = getWeekDates(addDays(weekStart, -7));
   const prevWeekDates = weekDates2.filter(d => d < weekStart);
   for (const d of prevWeekDates) {
-    existing.push({ date: d, plannedHours: 5, actualHours: Math.floor(Math.random() * 3) + 3, tasksCompleted: Math.floor(Math.random() * 4) + 3, tasksTotal: 8 });
+    existing.push({ date: d, plannedHours: 0, actualHours: Math.floor(Math.random() * 3) + 3, tasksCompleted: Math.floor(Math.random() * 4) + 3, tasksTotal: 8 });
   }
   for (const d of weekDates) {
-    existing.push({ date: d, plannedHours: 5, actualHours: 0, tasksCompleted: 0, tasksTotal: 8 });
+    existing.push({ date: d, plannedHours: 0, actualHours: 0, tasksCompleted: 0, tasksTotal: 8 });
   }
   return existing;
 }
@@ -179,10 +187,21 @@ export const useAppStore = create<AppStore>()(
 
         setTyping: (typing) => set({ isTyping: typing }),
 
-        setExamInfo: (info) => set(s => ({
-          examInfo: info,
-          tasks: info ? generateInitialTasks(info) : s.tasks,
-        })),
+        setExamInfo: (info) => set(s => {
+          if (!info) {
+            return { examInfo: null };
+          }
+          let progress = s.weeklyProgress;
+          if (!progress || progress.length === 0) {
+            progress = generateInitialProgress();
+          }
+          progress = progress.map(p => ({ ...p, plannedHours: info.dailyHours }));
+          return {
+            examInfo: info,
+            tasks: generateInitialTasks(info),
+            weeklyProgress: progress,
+          };
+        }),
 
         addTask: (task) => set(s => ({ tasks: [...s.tasks, task] })),
 

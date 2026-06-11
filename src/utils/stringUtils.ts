@@ -2,6 +2,14 @@ export function uid(prefix: string = ''): string {
   return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+const SUBJECT_NORMALIZE: Record<string, string> = {
+  '英语一': '英语', '英语二': '英语', '英语1': '英语', '英语2': '英语',
+  '数学一': '数学', '数学二': '数学', '数学三': '数学', '数学1': '数学', '数学2': '数学', '数学3': '数学',
+  '计算机专业课': '专业课', '计算机专业基础': '专业课', '408': '专业课', '计算机学科专业基础': '专业课',
+  '法硕': '专业课', '管综': '专业课', '西医综合': '专业课',
+  '政治': '政治', '思想政治': '政治',
+};
+
 export function parseSubjects(text: string): string[] {
   const cleaned = text.replace(/[，、,;；\n]+/g, '|');
   return cleaned
@@ -9,6 +17,14 @@ export function parseSubjects(text: string): string[] {
     .map(s => s.trim())
     .filter(Boolean)
     .map(s => s.replace(/科目[一二三四五六七八九十\d]+[:：]?\s*/g, ''))
+    .map(s => {
+      for (const key of Object.keys(SUBJECT_NORMALIZE)) {
+        if (s.includes(key)) {
+          return SUBJECT_NORMALIZE[key];
+        }
+      }
+      return s;
+    })
     .slice(0, 8);
 }
 

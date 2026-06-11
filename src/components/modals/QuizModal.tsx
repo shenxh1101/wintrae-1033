@@ -30,8 +30,16 @@ export default function QuizModal() {
   const [totalMinutes, setTotalMinutes] = useState(20);
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [perQuestionRemaining, setPerQuestionRemaining] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<number | null>(null);
   const perQuestionTimerRef = useRef<number | null>(null);
+  const elapsedTimerRef = useRef<number | null>(null);
+  const selectedAnswerRef = useRef<number | null>(null);
+
+  const setAnswer = (v: number | null) => {
+    setSelectedAnswer(v);
+    selectedAnswerRef.current = v;
+  };
 
   if (activeModal !== 'quiz') return null;
 
@@ -47,6 +55,17 @@ export default function QuizModal() {
     if (timeMode === 'per_question') return perQuestionSeconds * questions.length;
     return 0;
   }, [timeMode, totalMinutes, perQuestionSeconds, questions.length]);
+
+  useEffect(() => {
+    if (stage !== 'quiz') return;
+    setElapsedSeconds(0);
+    elapsedTimerRef.current = window.setInterval(() => {
+      setElapsedSeconds(prev => prev + 1);
+    }, 1000);
+    return () => {
+      if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    };
+  }, [stage]);
 
   useEffect(() => {
     if (stage !== 'quiz' || timeMode !== 'total') return;
@@ -74,7 +93,7 @@ export default function QuizModal() {
       setPerQuestionRemaining(prev => {
         if (prev <= 1) {
           if (perQuestionTimerRef.current) clearInterval(perQuestionTimerRef.current);
-          if (selectedAnswer !== null) {
+          if (selectedAnswerRef.current !== null) {
             handleNextOrSubmit();
           } else {
             const newAnswers = [...answers];
@@ -82,7 +101,7 @@ export default function QuizModal() {
             setAnswers(newAnswers);
             if (currentIdx < questions.length - 1) {
               setCurrentIdx(currentIdx + 1);
-              setSelectedAnswer(null);
+              setAnswer(null);
             } else {
               handleAutoSubmit();
             }
@@ -168,7 +187,7 @@ export default function QuizModal() {
     setQuestions(qs);
     setAnswers(new Array(qs.length).fill(null));
     setCurrentIdx(0);
-    setSelectedAnswer(null);
+    setAnswer(null);
     setStartTime(Date.now());
     setTimeSpent(0);
     if (timeMode === 'total') {
@@ -180,14 +199,14 @@ export default function QuizModal() {
   };
 
   const handleNextOrSubmit = () => {
-    if (selectedAnswer === null) return;
+    if (selectedAnswerRef.current === null) return;
     const newAnswers = [...answers];
-    newAnswers[currentIdx] = selectedAnswer;
+    newAnswers[currentIdx] = selectedAnswerRef.current;
     setAnswers(newAnswers);
 
     if (currentIdx < questions.length - 1) {
       setCurrentIdx(currentIdx + 1);
-      setSelectedAnswer(answers[currentIdx + 1] ?? null);
+      setAnswer(answers[currentIdx + 1] ?? null);
     } else {
       const spent = Math.floor((Date.now() - startTime) / 1000);
       setTimeSpent(spent);
@@ -199,12 +218,12 @@ export default function QuizModal() {
 
   const handleJumpToQuestion = (idx: number) => {
     const newAnswers = [...answers];
-    if (selectedAnswer !== null) {
-      newAnswers[currentIdx] = selectedAnswer;
+    if (selectedAnswerRef.current !== null) {
+      newAnswers[currentIdx] = selectedAnswerRef.current;
     }
     setAnswers(newAnswers);
     setCurrentIdx(idx);
-    setSelectedAnswer(newAnswers[idx] ?? null);
+    setAnswer(newAnswers[idx] ?? null);
   };
 
   const addWrongChaptersToPlan = () => {
@@ -255,13 +274,15 @@ export default function QuizModal() {
     setStage('config');
     setQuestions([]);
     setCurrentIdx(0);
-    setSelectedAnswer(null);
+    setAnswer(null);
     setAnswers([]);
     setTimeSpent(0);
     setRemainingSeconds(0);
     setPerQuestionRemaining(0);
+    setElapsedSeconds(0);
     if (timerRef.current) clearInterval(timerRef.current);
     if (perQuestionTimerRef.current) clearInterval(perQuestionTimerRef.current);
+    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
   };
 
   const formatTime = (sec: number) => {
@@ -270,7 +291,6 @@ export default function QuizModal() {
     return `${m}:${s}`;
   };
 
-  const displayTime = timeMode === 'total' ? remainingSeconds : timeMode === 'per_question' ? perQuestionRemaining : Math.floor((Date.now() - startTime) / 1000);
   const isTimeLow = (timeMode === 'total' && remainingSeconds <= 30) || (timeMode === 'per_question' && perQuestionRemaining <= 30);
 
   const renderAnswerCard = () => {
@@ -471,14 +491,37 @@ export default function QuizModal() {
                 <span className="badge badge-brand truncate">{questions[currentIdx].chapter}</span>
               </div>
               <div className="flex items-center gap-4">
-                <div
-                  className={`text-2xl font-bold font-mono tabular-nums ${
-                    isTimeLow && timeMode !== ('unlimited' as QuizTimeMode)
-                      ? 'text-rose-500 animate-pulse'
-                      : 'text-cyan-600'
-                  }`}
-                >
-                  {formatTime(displayTime)}
+                <div className="flex items-center gap-3">
+                  {timeMode === 'per_question' && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-slate-500">单题剩余</span>
+                      <span
+                        className={`text-lg font-bold font-mono tabular-nums ${
+                          perQuestionRemaining <= 30 ? 'text-rose-500 animate-pulse' : 'text-cyan-600'
+                        }`}
+                      >
+                        {perQuestionRemaining}秒
+                      </span>
+                    </div>
+                  )}
+                  {timeMode === 'total' && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs text-slate-500">总剩余</span>
+                      <span
+                        className={`text-lg font-bold font-mono tabular-nums ${
+                          remainingSeconds <= 30 ? 'text-rose-500 animate-pulse' : 'text-cyan-600'
+                        }`}
+                      >
+                        {formatTime(remainingSeconds)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-slate-500">已用</span>
+                    <span className="text-lg font-bold font-mono tabular-nums text-cyan-600">
+                      {formatTime(elapsedSeconds)}
+                    </span>
+                  </div>
                 </div>
                 {renderAnswerCard()}
               </div>
@@ -503,7 +546,7 @@ export default function QuizModal() {
                     return (
                       <button
                         key={i}
-                        onClick={() => setSelectedAnswer(i)}
+                        onClick={() => setAnswer(i)}
                         className={`w-full text-left p-4 rounded-xl border-2 transition-all flex items-start gap-3 ${
                           isSelected
                             ? 'border-cyan-400 bg-cyan-50 shadow-lg shadow-cyan-500/10'
