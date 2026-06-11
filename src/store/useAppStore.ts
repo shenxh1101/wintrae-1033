@@ -88,9 +88,36 @@ function generateInitialTasks(examInfo: ExamInfo): StudyTask[] {
   };
 
   const hitWeightSum = examInfo.subjects.reduce((sum, s) => sum + (weightMap[s] ?? 0), 0);
-  const unhitCount = examInfo.subjects.filter(s => !weightMap[s]).length;
-  const fallbackWeight = unhitCount > 0 ? Math.max(0, (1 - hitWeightSum) / unhitCount) : 0;
+  const hitSubjects = examInfo.subjects.filter(s => weightMap[s] !== undefined);
+  const unhitSubjects = examInfo.subjects.filter(s => weightMap[s] === undefined);
   const defaultWeight = 1 / examInfo.subjects.length;
+
+  const normalizedWeights: Record<string, number> = {};
+
+  if (hitWeightSum === 0) {
+    examInfo.subjects.forEach(s => {
+      normalizedWeights[s] = defaultWeight;
+    });
+  } else if (unhitSubjects.length > 0) {
+    hitSubjects.forEach(s => {
+      normalizedWeights[s] = weightMap[s];
+    });
+    const remainingWeight = 1 - hitWeightSum;
+    const unhitWeight = remainingWeight / unhitSubjects.length;
+    unhitSubjects.forEach(s => {
+      normalizedWeights[s] = unhitWeight;
+    });
+  } else {
+    if (hitWeightSum === 1) {
+      hitSubjects.forEach(s => {
+        normalizedWeights[s] = weightMap[s];
+      });
+    } else {
+      hitSubjects.forEach(s => {
+        normalizedWeights[s] = weightMap[s] / hitWeightSum;
+      });
+    }
+  }
 
   for (let day = 0; day < 14; day++) {
     const date = formatDate(addDays(today, day));
@@ -98,17 +125,19 @@ function generateInitialTasks(examInfo: ExamInfo): StudyTask[] {
     const subjectMinutes: Record<string, number> = {};
 
     examInfo.subjects.forEach((subject, idx) => {
-      let weight = weightMap[subject];
-      if (weight === undefined) {
-        weight = unhitCount > 0 ? fallbackWeight : defaultWeight;
-      }
-      subjectMinutes[subject] = Math.round(totalMinutes * weight);
+      subjectMinutes[subject] = Math.floor(totalMinutes * normalizedWeights[subject]);
       assignedMinutes += subjectMinutes[subject];
     });
 
     let diff = totalMinutes - assignedMinutes;
     if (diff !== 0 && examInfo.subjects.length > 0) {
-      subjectMinutes[examInfo.subjects[0]] += diff;
+      const sortedByWeight = [...examInfo.subjects].sort((a, b) => normalizedWeights[b] - normalizedWeights[a]);
+      let i = 0;
+      while (diff > 0 && i < sortedByWeight.length) {
+        subjectMinutes[sortedByWeight[i]] += 1;
+        diff -= 1;
+        i += 1;
+      }
     }
 
     examInfo.subjects.forEach((subject, sIdx) => {

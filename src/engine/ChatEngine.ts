@@ -324,20 +324,48 @@ export class FlowController {
     };
 
     const hitWeightSum = subjects.reduce((sum, s) => sum + (weightMap[s] ?? 0), 0);
-    const unhitCount = subjects.filter(s => !weightMap[s]).length;
-    const fallbackWeight = unhitCount > 0 ? Math.max(0, (1 - hitWeightSum) / unhitCount) : 0;
+    const hitSubjects = subjects.filter(s => weightMap[s] !== undefined);
+    const unhitSubjects = subjects.filter(s => weightMap[s] === undefined);
     const defaultWeight = 1 / subjects.length;
 
+    const normalizedWeights: Record<string, number> = {};
+
+    if (hitWeightSum === 0) {
+      subjects.forEach(s => {
+        normalizedWeights[s] = defaultWeight;
+      });
+    } else if (unhitSubjects.length > 0) {
+      hitSubjects.forEach(s => {
+        normalizedWeights[s] = weightMap[s];
+      });
+      const remainingWeight = 1 - hitWeightSum;
+      const unhitWeight = remainingWeight / unhitSubjects.length;
+      unhitSubjects.forEach(s => {
+        normalizedWeights[s] = unhitWeight;
+      });
+    } else {
+      if (hitWeightSum === 1) {
+        hitSubjects.forEach(s => {
+          normalizedWeights[s] = weightMap[s];
+        });
+      } else {
+        hitSubjects.forEach(s => {
+          normalizedWeights[s] = weightMap[s] / hitWeightSum;
+        });
+      }
+    }
+
     const durations = subjects.map(subject => {
-      const weight = weightMap[subject] ?? (unhitCount > 0 ? fallbackWeight : defaultWeight);
-      return Math.floor(totalMinutes * weight);
+      return Math.floor(totalMinutes * normalizedWeights[subject]);
     });
 
     let assigned = durations.reduce((a, b) => a + b, 0);
     let diff = totalMinutes - assigned;
+    const sortedByWeight = [...subjects].sort((a, b) => normalizedWeights[b] - normalizedWeights[a]);
     let idx = 0;
-    while (diff > 0 && idx < durations.length) {
-      durations[idx] += 1;
+    while (diff > 0 && idx < sortedByWeight.length) {
+      const subjectIdx = subjects.indexOf(sortedByWeight[idx]);
+      durations[subjectIdx] += 1;
       diff -= 1;
       idx += 1;
     }
@@ -593,25 +621,47 @@ export class FlowController {
   static handleRecite(intent: IntentResult, ctx: Record<string, any>, userText: string): EngineResponse {
     const t = responseTemplates.recite;
     const step = ctx.step ?? 0;
+    const store = useAppStore.getState();
 
-    if (step === 0 || intent.intent === 'start_recite') {
-      const chaptersFlat = mockSubjects.flatMap(s => s.chapters.flatMap(c => (c.children || []).map(ch => ({ id: ch.id, name: `${s.name} - ${c.name} / ${ch.name}` })))).slice(0, 8);
-      return {
-        content: t.chooseChapter,
-        type: 'options',
-        payload: { chapters: chaptersFlat },
-        suggestions: chaptersFlat.map(c => c.name).slice(0, 4),
-        newFlow: { flow: 'recite', step: 1, context: {} },
-      };
-    }
-    if (step === 1 || intent.intent === 'recite_choose') {
-      const store = useAppStore.getState();
-      const subjectName = ctx.subjectName || findSubjectName(userText, mockSubjects.map(s => s.name));
-      const chapters = ctx.chapters as string[] | undefined;
-      
+    const parseChaptersFromText = (text: string): { subjectName: string | undefined; chapters: string[] } => {
+      const subjectName = findSubjectName(text, mockSubjects.map(s => s.name));
+      const chapters: string[] = [];
+      mockSubjects.forEach(subject => {
+        subject.chapters.forEach(bigChapter => {
+          if (text.includes(bigChapter.name)) {
+            chapters.push(bigChapter.name);
+          }
+          if (bigChapter.children) {
+            bigChapter.children.forEach(smallChapter => {
+              if (text.includes(smallChapter.name)) {
+                chapters.push(smallChapter.name);
+              }
+            });
+          }
+        });
+      });
+      return { subjectName, chapters };
+    };
+
+    const getChapterList = (subjectName?: string) => {
+      const subjects = subjectName
+        ? mockSubjects.filter(s => s.name === subjectName)
+        : mockSubjects;
+      return subjects.flatMap(s =>
+        s.chapters.flatMap(c =>
+          (c.children || []).map(ch => ({
+            id: ch.id,
+            name: ch.name,
+            knowledgePoints: ch.knowledgePoints?.length || 0,
+          }))
+        )
+      );
+    };
+
+    const startQuiz = (chapters: string[], subjectName?: string): EngineResponse => {
       let pool = mockKnowledgePoints;
       let introMsg = '';
-      
+
       if (chapters && chapters.length > 0) {
         pool = mockKnowledgePoints.filter(kp => chapters.includes(kp.chapter));
         if (pool.length === 0 && subjectName) {
@@ -624,20 +674,68 @@ export class FlowController {
       } else if (subjectName) {
         pool = mockKnowledgePoints.filter(kp => kp.subject === subjectName);
       }
-      
+
       if (pool.length === 0) {
         pool = mockKnowledgePoints;
       }
-      
+
       const kp = pool[Math.floor(Math.random() * pool.length)];
       if (!chapters || chapters.length === 0) {
         store.setSelectedChapters([kp.chapter]);
       }
-      
+
       return {
         content: `${introMsg}${t.asking(kp.title)}`,
         type: 'text',
         newFlow: { flow: 'recite', step: 2, context: { kpId: kp.id } },
+      };
+    };
+
+    if (step === 0 || intent.intent === 'start_recite') {
+      const { subjectName, chapters } = parseChaptersFromText(userText);
+
+      if (chapters.length > 0) {
+        return startQuiz(chapters, subjectName);
+      }
+
+      const chapterList = getChapterList(subjectName);
+      const introText = subjectName
+        ? `背诵抽查开始！🎯\n\n「${subjectName}」的章节如下，请选择要抽查的章节：`
+        : t.chooseChapter;
+
+      return {
+        content: introText,
+        type: 'options',
+        payload: {
+          chapters: chapterList.map(c => ({
+            id: c.id,
+            name: `${c.name}（${c.knowledgePoints}个知识点）`,
+          })),
+        },
+        suggestions: chapterList.slice(0, 4).map(c => c.name),
+        newFlow: { flow: 'recite', step: 1, context: { subjectName } },
+      };
+    }
+    if (step === 1 || intent.intent === 'recite_choose') {
+      const subjectName = ctx.subjectName as string | undefined;
+      const { chapters } = parseChaptersFromText(userText);
+
+      if (chapters.length > 0) {
+        return startQuiz(chapters, subjectName);
+      }
+
+      const chapterList = getChapterList(subjectName);
+      return {
+        content: `请选择要抽查的章节：`,
+        type: 'options',
+        payload: {
+          chapters: chapterList.map(c => ({
+            id: c.id,
+            name: `${c.name}（${c.knowledgePoints}个知识点）`,
+          })),
+        },
+        suggestions: chapterList.slice(0, 4).map(c => c.name),
+        newFlow: { flow: 'recite', step: 1, context: { subjectName } },
       };
     }
     if (step === 2 || intent.intent === 'recite_answer') {

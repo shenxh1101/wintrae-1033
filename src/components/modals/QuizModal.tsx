@@ -35,13 +35,50 @@ export default function QuizModal() {
   const perQuestionTimerRef = useRef<number | null>(null);
   const elapsedTimerRef = useRef<number | null>(null);
   const selectedAnswerRef = useRef<number | null>(null);
+  const answersRef = useRef<(number | null)[]>([]);
+  const currentIdxRef = useRef(0);
+  const questionsRef = useRef<QuizQuestion[]>([]);
+  const startTimeRef = useRef(0);
+  const handleAutoSubmitRef = useRef<() => void>(() => {});
+  const handleNextOrSubmitRef = useRef<() => void>(() => {});
 
   const setAnswer = (v: number | null) => {
     setSelectedAnswer(v);
     selectedAnswerRef.current = v;
   };
 
-  if (activeModal !== 'quiz') return null;
+  const clearAllTimers = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (perQuestionTimerRef.current) {
+      clearInterval(perQuestionTimerRef.current);
+      perQuestionTimerRef.current = null;
+    }
+    if (elapsedTimerRef.current) {
+      clearInterval(elapsedTimerRef.current);
+      elapsedTimerRef.current = null;
+    }
+  };
+
+  const resetQuiz = () => {
+    clearAllTimers();
+    setStage('config');
+    setQuestions([]);
+    setCurrentIdx(0);
+    setAnswer(null);
+    setAnswers([]);
+    setStartTime(0);
+    setTimeSpent(0);
+    setRemainingSeconds(0);
+    setPerQuestionRemaining(0);
+    setElapsedSeconds(0);
+    answersRef.current = [];
+    currentIdxRef.current = 0;
+    questionsRef.current = [];
+    startTimeRef.current = 0;
+  };
 
   const subjectColors: Record<string, string> = {
     '政治': 'bg-red-100 text-red-700',
@@ -55,6 +92,17 @@ export default function QuizModal() {
     if (timeMode === 'per_question') return perQuestionSeconds * questions.length;
     return 0;
   }, [timeMode, totalMinutes, perQuestionSeconds, questions.length]);
+
+  useEffect(() => {
+    if (activeModal !== 'quiz') {
+      resetQuiz();
+    }
+  }, [activeModal]);
+
+  useEffect(() => {
+    handleAutoSubmitRef.current = handleAutoSubmit;
+    handleNextOrSubmitRef.current = handleNextOrSubmit;
+  });
 
   useEffect(() => {
     if (stage !== 'quiz') return;
@@ -74,7 +122,7 @@ export default function QuizModal() {
       setRemainingSeconds(prev => {
         if (prev <= 1) {
           if (timerRef.current) clearInterval(timerRef.current);
-          handleAutoSubmit();
+          handleAutoSubmitRef.current();
           return 0;
         }
         return prev - 1;
@@ -83,7 +131,7 @@ export default function QuizModal() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [stage, timeMode]);
+  }, [stage, timeMode, remainingSeconds]);
 
   useEffect(() => {
     if (stage !== 'quiz' || timeMode !== 'per_question') return;
@@ -94,16 +142,22 @@ export default function QuizModal() {
         if (prev <= 1) {
           if (perQuestionTimerRef.current) clearInterval(perQuestionTimerRef.current);
           if (selectedAnswerRef.current !== null) {
-            handleNextOrSubmit();
+            handleNextOrSubmitRef.current();
           } else {
-            const newAnswers = [...answers];
-            newAnswers[currentIdx] = -1;
+            const currAnswers = answersRef.current;
+            const currIdx = currentIdxRef.current;
+            const currQuestions = questionsRef.current;
+            const newAnswers = [...currAnswers];
+            newAnswers[currIdx] = -1;
             setAnswers(newAnswers);
-            if (currentIdx < questions.length - 1) {
-              setCurrentIdx(currentIdx + 1);
+            answersRef.current = newAnswers;
+            if (currIdx < currQuestions.length - 1) {
+              const nextIdx = currIdx + 1;
+              setCurrentIdx(nextIdx);
+              currentIdxRef.current = nextIdx;
               setAnswer(null);
             } else {
-              handleAutoSubmit();
+              handleAutoSubmitRef.current();
             }
           }
           return 0;
@@ -114,14 +168,17 @@ export default function QuizModal() {
     return () => {
       if (perQuestionTimerRef.current) clearInterval(perQuestionTimerRef.current);
     };
-  }, [stage, timeMode, currentIdx]);
+  }, [stage, timeMode, currentIdx, perQuestionSeconds]);
 
   const handleAutoSubmit = () => {
-    const finalAnswers = answers.map((a, i) => a === null ? -1 : a);
-    const spent = Math.floor((Date.now() - startTime) / 1000);
+    const currAnswers = answersRef.current;
+    const currQuestions = questionsRef.current;
+    const currStartTime = startTimeRef.current;
+    const finalAnswers = currAnswers.map((a) => a === null ? -1 : a);
+    const spent = Math.floor((Date.now() - currStartTime) / 1000);
     setTimeSpent(spent);
     setStage('result');
-    const correctCount = questions.reduce((s, q, i) => s + (finalAnswers[i] === q.correctIndex ? 1 : 0), 0);
+    const correctCount = currQuestions.reduce((s, q, i) => s + (finalAnswers[i] === q.correctIndex ? 1 : 0), 0);
     processResults(finalAnswers, spent, correctCount);
   };
 
@@ -183,46 +240,78 @@ export default function QuizModal() {
   };
 
   const startQuiz = () => {
+    clearAllTimers();
     const qs = getRandomQuestions(count, subjectName === '综合' ? undefined : subjectName);
+    const initialAnswers = new Array(qs.length).fill(null);
+    const now = Date.now();
+
     setQuestions(qs);
-    setAnswers(new Array(qs.length).fill(null));
+    questionsRef.current = qs;
+
+    setAnswers(initialAnswers);
+    answersRef.current = initialAnswers;
+
     setCurrentIdx(0);
+    currentIdxRef.current = 0;
+
     setAnswer(null);
-    setStartTime(Date.now());
+    setStartTime(now);
+    startTimeRef.current = now;
     setTimeSpent(0);
+    setElapsedSeconds(0);
+
     if (timeMode === 'total') {
       setRemainingSeconds(totalMinutes * 60);
+      setPerQuestionRemaining(0);
     } else if (timeMode === 'per_question') {
       setPerQuestionRemaining(perQuestionSeconds);
+      setRemainingSeconds(0);
+    } else {
+      setRemainingSeconds(0);
+      setPerQuestionRemaining(0);
     }
+
     setStage('quiz');
   };
 
   const handleNextOrSubmit = () => {
     if (selectedAnswerRef.current === null) return;
-    const newAnswers = [...answers];
-    newAnswers[currentIdx] = selectedAnswerRef.current;
-    setAnswers(newAnswers);
 
-    if (currentIdx < questions.length - 1) {
-      setCurrentIdx(currentIdx + 1);
-      setAnswer(answers[currentIdx + 1] ?? null);
+    const currAnswers = answersRef.current;
+    const currIdx = currentIdxRef.current;
+    const currQuestions = questionsRef.current;
+    const currStartTime = startTimeRef.current;
+
+    const newAnswers = [...currAnswers];
+    newAnswers[currIdx] = selectedAnswerRef.current;
+    setAnswers(newAnswers);
+    answersRef.current = newAnswers;
+
+    if (currIdx < currQuestions.length - 1) {
+      const nextIdx = currIdx + 1;
+      setCurrentIdx(nextIdx);
+      currentIdxRef.current = nextIdx;
+      setAnswer(newAnswers[nextIdx] ?? null);
     } else {
-      const spent = Math.floor((Date.now() - startTime) / 1000);
+      const spent = Math.floor((Date.now() - currStartTime) / 1000);
       setTimeSpent(spent);
       setStage('result');
-      const correctCount = questions.reduce((s, q, i) => s + (newAnswers[i] === q.correctIndex ? 1 : 0), 0);
+      const correctCount = currQuestions.reduce((s, q, i) => s + (newAnswers[i] === q.correctIndex ? 1 : 0), 0);
       processResults(newAnswers, spent, correctCount);
     }
   };
 
   const handleJumpToQuestion = (idx: number) => {
-    const newAnswers = [...answers];
+    const currAnswers = answersRef.current;
+    const currIdx = currentIdxRef.current;
+    const newAnswers = [...currAnswers];
     if (selectedAnswerRef.current !== null) {
-      newAnswers[currentIdx] = selectedAnswerRef.current;
+      newAnswers[currIdx] = selectedAnswerRef.current;
     }
     setAnswers(newAnswers);
+    answersRef.current = newAnswers;
     setCurrentIdx(idx);
+    currentIdxRef.current = idx;
     setAnswer(newAnswers[idx] ?? null);
   };
 
@@ -271,18 +360,7 @@ export default function QuizModal() {
   }, [questions, answers]);
 
   const handleRestart = () => {
-    setStage('config');
-    setQuestions([]);
-    setCurrentIdx(0);
-    setAnswer(null);
-    setAnswers([]);
-    setTimeSpent(0);
-    setRemainingSeconds(0);
-    setPerQuestionRemaining(0);
-    setElapsedSeconds(0);
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (perQuestionTimerRef.current) clearInterval(perQuestionTimerRef.current);
-    if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
+    resetQuiz();
   };
 
   const formatTime = (sec: number) => {
@@ -327,6 +405,8 @@ export default function QuizModal() {
       </div>
     );
   };
+
+  if (activeModal !== 'quiz') return null;
 
   return (
     <div className="modal-backdrop" onClick={() => setActiveModal(null)}>
@@ -403,74 +483,93 @@ export default function QuizModal() {
 
               <div>
                 <label className="block text-sm font-semibold text-slate-700 mb-3">时间模式</label>
-                <div className="space-y-2">
+                <div className="grid grid-cols-3 gap-2 mb-4">
                   <button
                     onClick={() => setTimeMode('unlimited')}
-                    className={`w-full p-3 rounded-xl border-2 text-left transition-all flex items-center gap-3 ${
+                    className={`p-3 rounded-xl border-2 text-center transition-all ${
                       timeMode === 'unlimited'
                         ? 'border-cyan-400 bg-cyan-50 shadow-lg shadow-cyan-500/10'
                         : 'border-brand-100 bg-white hover:border-brand-200 hover:bg-brand-50/50'
                     }`}
                   >
-                    <Timer className={`w-5 h-5 ${timeMode === 'unlimited' ? 'text-cyan-500' : 'text-slate-400'}`} />
-                    <div>
-                      <div className="font-semibold text-slate-700 text-sm">不限时</div>
-                      <div className="text-xs text-slate-400">仅记录答题用时，无时间限制</div>
-                    </div>
+                    <Timer className={`w-5 h-5 mx-auto mb-1 ${timeMode === 'unlimited' ? 'text-cyan-500' : 'text-slate-400'}`} />
+                    <div className={`text-sm font-semibold ${timeMode === 'unlimited' ? 'text-cyan-700' : 'text-slate-700'}`}>不限时</div>
                   </button>
                   <button
                     onClick={() => setTimeMode('per_question')}
-                    className={`w-full p-3 rounded-xl border-2 text-left transition-all flex items-center gap-3 ${
+                    className={`p-3 rounded-xl border-2 text-center transition-all ${
                       timeMode === 'per_question'
                         ? 'border-cyan-400 bg-cyan-50 shadow-lg shadow-cyan-500/10'
                         : 'border-brand-100 bg-white hover:border-brand-200 hover:bg-brand-50/50'
                     }`}
                   >
-                    <AlertTriangle className={`w-5 h-5 ${timeMode === 'per_question' ? 'text-cyan-500' : 'text-slate-400'}`} />
-                    <div className="flex-1">
-                      <div className="font-semibold text-slate-700 text-sm">每题限时</div>
-                      <div className="text-xs text-slate-400">每道题独立计时，超时自动进入下一题</div>
-                    </div>
-                    {timeMode === 'per_question' && (
-                      <select
-                        value={perQuestionSeconds}
-                        onChange={(e) => setPerQuestionSeconds(Number(e.target.value))}
-                        className="text-sm border border-cyan-300 rounded-lg px-2 py-1 bg-white text-slate-700"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {Array.from({ length: 16 }, (_, i) => (i + 1) * 30).filter(n => n >= 30 && n <= 180).map(n => (
-                          <option key={n} value={n}>{n}秒</option>
-                        ))}
-                      </select>
-                    )}
+                    <AlertTriangle className={`w-5 h-5 mx-auto mb-1 ${timeMode === 'per_question' ? 'text-cyan-500' : 'text-slate-400'}`} />
+                    <div className={`text-sm font-semibold ${timeMode === 'per_question' ? 'text-cyan-700' : 'text-slate-700'}`}>每题限时</div>
                   </button>
                   <button
                     onClick={() => setTimeMode('total')}
-                    className={`w-full p-3 rounded-xl border-2 text-left transition-all flex items-center gap-3 ${
+                    className={`p-3 rounded-xl border-2 text-center transition-all ${
                       timeMode === 'total'
                         ? 'border-cyan-400 bg-cyan-50 shadow-lg shadow-cyan-500/10'
                         : 'border-brand-100 bg-white hover:border-brand-200 hover:bg-brand-50/50'
                     }`}
                   >
-                    <Timer className={`w-5 h-5 ${timeMode === 'total' ? 'text-cyan-500' : 'text-slate-400'}`} />
-                    <div className="flex-1">
-                      <div className="font-semibold text-slate-700 text-sm">整卷限时</div>
-                      <div className="text-xs text-slate-400">整套试卷总时限，时间到自动提交</div>
-                    </div>
-                    {timeMode === 'total' && (
-                      <select
-                        value={totalMinutes}
-                        onChange={(e) => setTotalMinutes(Number(e.target.value))}
-                        className="text-sm border border-cyan-300 rounded-lg px-2 py-1 bg-white text-slate-700"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {Array.from({ length: 12 }, (_, i) => i + 5).filter(n => n >= 5 && n <= 60 && n % 5 === 0).map(n => (
-                          <option key={n} value={n}>{n}分钟</option>
-                        ))}
-                      </select>
-                    )}
+                    <Timer className={`w-5 h-5 mx-auto mb-1 ${timeMode === 'total' ? 'text-cyan-500' : 'text-slate-400'}`} />
+                    <div className={`text-sm font-semibold ${timeMode === 'total' ? 'text-cyan-700' : 'text-slate-700'}`}>整卷限时</div>
                   </button>
                 </div>
+
+                {timeMode === 'per_question' && (
+                  <div className="bg-cyan-50/50 rounded-xl p-4 border border-cyan-100">
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">
+                      每题时间：<span className="text-cyan-600 font-bold">{perQuestionSeconds}</span> 秒
+                    </label>
+                    <input
+                      type="range"
+                      min={30}
+                      max={180}
+                      step={15}
+                      value={perQuestionSeconds}
+                      onChange={(e) => setPerQuestionSeconds(Number(e.target.value))}
+                      className="w-full h-2 rounded-full bg-slate-200 appearance-none cursor-pointer accent-cyan-500"
+                    />
+                    <div className="flex justify-between text-xs text-slate-400 mt-2">
+                      <span>30秒</span>
+                      <span>60秒</span>
+                      <span>120秒</span>
+                      <span>180秒</span>
+                    </div>
+                  </div>
+                )}
+
+                {timeMode === 'total' && (
+                  <div className="bg-cyan-50/50 rounded-xl p-4 border border-cyan-100">
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">
+                      总时间：<span className="text-cyan-600 font-bold">{totalMinutes}</span> 分钟
+                    </label>
+                    <input
+                      type="range"
+                      min={5}
+                      max={60}
+                      step={5}
+                      value={totalMinutes}
+                      onChange={(e) => setTotalMinutes(Number(e.target.value))}
+                      className="w-full h-2 rounded-full bg-slate-200 appearance-none cursor-pointer accent-cyan-500"
+                    />
+                    <div className="flex justify-between text-xs text-slate-400 mt-2">
+                      <span>5分钟</span>
+                      <span>20分钟</span>
+                      <span>40分钟</span>
+                      <span>60分钟</span>
+                    </div>
+                  </div>
+                )}
+
+                {timeMode === 'unlimited' && (
+                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-100 text-center">
+                    <p className="text-sm text-slate-500">仅记录答题用时，无时间限制</p>
+                  </div>
+                )}
               </div>
 
               <button onClick={startQuiz} className="btn-primary w-full !py-3.5 text-base">
