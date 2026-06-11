@@ -15,6 +15,8 @@ export default function QuizModal() {
   const wrongQuestions = useAppStore(s => s.wrongQuestions);
   const addTask = useAppStore(s => s.addTask);
   const knowledgePoints = useAppStore(s => s.knowledgePoints);
+  const quizPreset = useAppStore(s => s.quizPreset);
+  const clearQuizPreset = useAppStore(s => s.clearQuizPreset);
 
   const [stage, setStage] = useState<'config' | 'quiz' | 'result'>('config');
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
@@ -31,6 +33,8 @@ export default function QuizModal() {
   const [remainingSeconds, setRemainingSeconds] = useState(0);
   const [perQuestionRemaining, setPerQuestionRemaining] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [addedWrongIds, setAddedWrongIds] = useState<Set<string>>(new Set());
+  const [addedPlanChapters, setAddedPlanChapters] = useState<Set<string>>(new Set());
   const timerRef = useRef<number | null>(null);
   const perQuestionTimerRef = useRef<number | null>(null);
   const elapsedTimerRef = useRef<number | null>(null);
@@ -74,6 +78,8 @@ export default function QuizModal() {
     setRemainingSeconds(0);
     setPerQuestionRemaining(0);
     setElapsedSeconds(0);
+    setAddedWrongIds(new Set());
+    setAddedPlanChapters(new Set());
     answersRef.current = [];
     currentIdxRef.current = 0;
     questionsRef.current = [];
@@ -96,8 +102,27 @@ export default function QuizModal() {
   useEffect(() => {
     if (activeModal !== 'quiz') {
       resetQuiz();
+    } else {
+      if (quizPreset) {
+        if (quizPreset.subject) {
+          setSubjectName(quizPreset.subject);
+        }
+        if (quizPreset.count) {
+          setCount(Math.min(10, Math.max(3, quizPreset.count)));
+        }
+        if (quizPreset.timeMode) {
+          setTimeMode(quizPreset.timeMode);
+        }
+        if (quizPreset.perQuestionSeconds !== undefined) {
+          setPerQuestionSeconds(quizPreset.perQuestionSeconds);
+        }
+        if (quizPreset.totalMinutes !== undefined) {
+          setTotalMinutes(quizPreset.totalMinutes);
+        }
+        clearQuizPreset();
+      }
     }
-  }, [activeModal]);
+  }, [activeModal, quizPreset]);
 
   useEffect(() => {
     handleAutoSubmitRef.current = handleAutoSubmit;
@@ -182,6 +207,28 @@ export default function QuizModal() {
     processResults(finalAnswers, spent, correctCount);
   };
 
+  const chapterSummary = useMemo(() => {
+    const map: Record<string, { chapter: string; subject: string; total: number; wrong: number; correctRate: number; questions: QuizQuestion[] }> = {};
+    questions.forEach((q, i) => {
+      if (!map[q.chapter]) {
+        map[q.chapter] = { chapter: q.chapter, subject: q.subject, total: 0, wrong: 0, correctRate: 0, questions: [] };
+      }
+      map[q.chapter].total++;
+      const userAns = answers[i];
+      const isWrong = userAns === null || userAns === undefined || userAns < 0 || userAns !== q.correctIndex;
+      if (isWrong) {
+        map[q.chapter].wrong++;
+        map[q.chapter].questions.push(q);
+      }
+    });
+    const result = Object.values(map).map(item => ({
+      ...item,
+      correctRate: item.total === 0 ? 0 : Math.round(((item.total - item.wrong) / item.total) * 100),
+    }));
+    result.sort((a, b) => a.correctRate - b.correctRate);
+    return result;
+  }, [questions, answers]);
+
   const processResults = (finalAnswers: (number | null)[], spent: number, correctCount: number) => {
     const wrongByChapter: Record<string, { count: number; questions: QuizQuestion[]; knowledgePointIds: string[] }> = {};
     questions.forEach((q, i) => {
@@ -215,28 +262,40 @@ export default function QuizModal() {
       })),
     };
     addQuizRecord(record);
+  };
 
-    questions.forEach((q, i) => {
-      if (finalAnswers[i] !== q.correctIndex) {
-        const existingWrong = wrongQuestions.find(wq => wq.question === q.question);
-        const reviewCount = existingWrong?.reviewCount ?? 0;
-        const intervals = [1, 2, 4, 7, 15, 30];
-        const intervalIdx = Math.min(reviewCount, intervals.length - 1);
-        addWrongQuestion({
-          id: uid('wq-modal-'),
-          subject: q.subject,
-          chapter: q.chapter,
-          question: q.question,
-          options: q.options,
-          userAnswer: (finalAnswers[i] ?? -1) >= 0 ? String.fromCharCode(65 + (finalAnswers[i] ?? 0)) : '未作答',
-          correctAnswer: String.fromCharCode(65 + q.correctIndex),
-          analysis: q.analysis,
-          addedAt: Date.now(),
-          reviewCount: reviewCount,
-          nextReviewDate: formatDate(addDays(new Date(), intervals[intervalIdx])),
-        });
-      }
+  const handleAddWrongQuestion = (q: QuizQuestion, userAns: number | null) => {
+    if (addedWrongIds.has(q.id)) return;
+    const existingWrong = wrongQuestions.find(wq => wq.question === q.question);
+    addWrongQuestion({
+      id: uid('wq-modal-'),
+      subject: q.subject,
+      chapter: q.chapter,
+      question: q.question,
+      options: q.options,
+      userAnswer: (userAns ?? -1) >= 0 ? String.fromCharCode(65 + (userAns ?? 0)) : '未作答',
+      correctAnswer: String.fromCharCode(65 + q.correctIndex),
+      analysis: q.analysis,
+      addedAt: Date.now(),
+      reviewCount: existingWrong?.reviewCount ?? 0,
+      nextReviewDate: getEbbinghausDates(new Date())[0],
     });
+    setAddedWrongIds(prev => new Set(prev).add(q.id));
+  };
+
+  const handleAddChapterToPlan = (chapter: string, subject: string) => {
+    if (addedPlanChapters.has(chapter)) return;
+    const task: StudyTask = {
+      id: uid('task-review-'),
+      title: `复习薄弱章节：${chapter}`,
+      subject,
+      date: formatDate(new Date()),
+      duration: 30,
+      completed: false,
+      priority: 'high',
+    };
+    addTask(task);
+    setAddedPlanChapters(prev => new Set(prev).add(chapter));
   };
 
   const startQuiz = () => {
@@ -736,62 +795,70 @@ export default function QuizModal() {
               </p>
             </div>
 
-            {Object.keys(wrongQuestionsByChapter).length > 0 && (
-              <div className="glass-panel p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <BookOpen className="w-5 h-5 text-amber-600" />
-                    <h3 className="font-semibold text-slate-700">错题归类分析</h3>
-                  </div>
-                  <button
-                    onClick={addWrongChaptersToPlan}
-                    className="btn-primary !py-1.5 !px-3 text-xs"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    一键加入复习计划
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  {Object.entries(wrongQuestionsByChapter).map(([chapter, data]) => {
-                    const sampleQuestion = data.questions[0]?.question;
-                    const subject = data.questions[0]?.question.subject;
-                    return (
-                      <div
-                        key={chapter}
-                        className="p-4 rounded-xl border border-rose-100 bg-rose-50/30"
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <AlertTriangle className="w-4 h-4 text-rose-500" />
-                            <span className="font-semibold text-slate-700 text-sm">{chapter}</span>
-                            {subject && (
-                              <span className={`badge text-xs ${subjectColors[subject] || 'bg-brand-100 text-brand-700'}`}>
-                                {subject}
-                              </span>
-                            )}
-                          </div>
-                          <span className="text-rose-600 font-semibold text-sm">
-                            {data.count} 题错误
-                          </span>
-                        </div>
-                        <div className="text-xs text-slate-600 mb-2">
-                          <span className="text-slate-500">薄弱知识点：</span>
-                          {data.questions.slice(0, 2).map((q, i) => (
-                            <span key={i} className="inline-block mr-2 bg-rose-100 text-rose-700 px-2 py-0.5 rounded mt-1">
-                              第{q.idx + 1}题
-                            </span>
-                          ))}
-                        </div>
-                        <div className="text-xs text-slate-500 flex items-center gap-1">
-                          <Calendar className="w-3 h-3" />
-                          建议优先复习「{chapter}」相关章节
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+            <div className="glass-panel p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <AlertTriangle className="w-5 h-5 text-amber-600" />
+                <h3 className="font-semibold text-slate-700">📊 薄弱章节分析</h3>
               </div>
-            )}
+              <div className="space-y-3">
+                {chapterSummary.map((item) => {
+                  const isWeak = item.correctRate < 50;
+                  const correctCount = item.total - item.wrong;
+                  const barColor = item.correctRate >= 70
+                    ? 'bg-gradient-to-r from-emerald-400 to-emerald-500'
+                    : item.correctRate >= 50
+                    ? 'bg-gradient-to-r from-amber-400 to-amber-500'
+                    : 'bg-gradient-to-r from-rose-400 to-rose-500';
+                  const added = addedPlanChapters.has(item.chapter);
+                  return (
+                    <div
+                      key={item.chapter}
+                      className={`p-4 rounded-xl border ${
+                        isWeak
+                          ? 'border-rose-200 bg-rose-50/40'
+                          : 'border-brand-100 bg-white'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2 gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isWeak && <span className="text-rose-500">⚠️</span>}
+                          <span className="font-semibold text-slate-700 text-sm truncate">{item.chapter}</span>
+                          <span className={`badge text-xs shrink-0 ${subjectColors[item.subject] || 'bg-brand-100 text-brand-700'}`}>
+                            {item.subject}
+                          </span>
+                          {isWeak && (
+                            <span className="text-xs text-rose-600 font-semibold shrink-0">薄弱</span>
+                          )}
+                        </div>
+                        {isWeak && (
+                          <button
+                            onClick={() => handleAddChapterToPlan(item.chapter, item.subject)}
+                            disabled={added}
+                            className={`btn-secondary !py-1 !px-2.5 text-xs shrink-0 ${
+                              added ? '!bg-slate-100 !text-slate-400 !border-slate-200 cursor-not-allowed' : ''
+                            }`}
+                          >
+                            <Calendar className="w-3 h-3" />
+                            {added ? '已加入计划 ✓' : '📅 加入学习计划'}
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <div className="flex-1 h-2.5 rounded-full bg-slate-100 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${barColor}`}
+                            style={{ width: `${item.correctRate}%` }}
+                          />
+                        </div>
+                        <span className="text-sm font-semibold text-slate-600 tabular-nums shrink-0">
+                          {correctCount}/{item.total} 正确 ({item.correctRate}%)
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
 
             <div className="glass-panel p-5">
               <h3 className="font-semibold text-slate-700 mb-4">📋 答题详情</h3>
@@ -799,6 +866,7 @@ export default function QuizModal() {
                 {questions.map((q, i) => {
                   const userAns = answers[i];
                   const isCorrect = userAns === q.correctIndex;
+                  const added = addedWrongIds.has(q.id);
                   return (
                     <div
                       key={q.id}
@@ -844,9 +912,21 @@ export default function QuizModal() {
                               )}
                             </div>
                             {!isCorrect && (
-                              <div className="text-slate-600 mt-2 p-2 rounded-lg bg-white/80">
-                                💡 {q.analysis}
-                              </div>
+                              <>
+                                <div className="text-slate-600 mt-2 p-2 rounded-lg bg-white/80">
+                                  💡 {q.analysis}
+                                </div>
+                                <button
+                                  onClick={() => handleAddWrongQuestion(q, userAns)}
+                                  disabled={added}
+                                  className={`mt-2 btn-secondary !py-1 !px-2.5 text-xs ${
+                                    added ? '!bg-slate-100 !text-slate-400 !border-slate-200 cursor-not-allowed' : ''
+                                  }`}
+                                >
+                                  <BookOpen className="w-3 h-3" />
+                                  {added ? '已加入 ✓' : '📚 加入错题本'}
+                                </button>
+                              </>
                             )}
                           </div>
                         </div>

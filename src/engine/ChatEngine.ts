@@ -1,7 +1,7 @@
 import type { FlowType, Message, StudyTask, WrongQuestion, ExamInfo, QuizQuestion, ErrorTagType } from '@/store/types';
 import { ERROR_TAGS } from '@/store/types';
 import { useAppStore } from '@/store/useAppStore';
-import { parseSubjects, findSubjectName, parseMCAnswer, parseWrongQuestion, keywordMatch, answerScore, uid, extractNumber } from '@/utils/stringUtils';
+import { parseSubjects, findSubjectName, parseMCAnswer, parseWrongQuestion, keywordMatch, answerScore, uid, extractNumber, analyzeKeywords, segmentChinese } from '@/utils/stringUtils';
 import { parseDateInput, parseHoursInput, formatDate, addDays, isToday, getEbbinghausDates, getWeekDates } from '@/utils/dateUtils';
 import { mockKnowledgePoints, mockSubjects } from '@/data/knowledge';
 import { getRandomQuestions } from '@/data/questions';
@@ -684,10 +684,13 @@ export class FlowController {
         store.setSelectedChapters([kp.chapter]);
       }
 
+      const reciteSubject = subjectName || kp.subject;
+      const reciteChapters = chapters && chapters.length > 0 ? chapters : [];
+
       return {
         content: `${introMsg}${t.asking(kp.title)}`,
         type: 'text',
-        newFlow: { flow: 'recite', step: 2, context: { kpId: kp.id } },
+        newFlow: { flow: 'recite', step: 2, context: { kpId: kp.id, reciteSubject, reciteChapters } },
       };
     };
 
@@ -698,10 +701,12 @@ export class FlowController {
         return startQuiz(chapters, subjectName);
       }
 
+      if (subjectName) {
+        return startQuiz([], subjectName);
+      }
+
       const chapterList = getChapterList(subjectName);
-      const introText = subjectName
-        ? `背诵抽查开始！🎯\n\n「${subjectName}」的章节如下，请选择要抽查的章节：`
-        : t.chooseChapter;
+      const introText = t.chooseChapter;
 
       return {
         content: introText,
@@ -739,33 +744,107 @@ export class FlowController {
       };
     }
     if (step === 2 || intent.intent === 'recite_answer') {
-      const { kpId } = useAppStore.getState().flowState.context;
+      const flowCtx = useAppStore.getState().flowState.context;
+      const { kpId, reciteSubject, reciteChapters } = flowCtx;
       const kp = mockKnowledgePoints.find(k => k.id === kpId);
       const score = kp ? answerScore(userText, kp.content) : 50;
       const masteryDelta = score >= 70 ? 10 : score >= 50 ? 3 : -5;
       const good = score >= 60;
-      const reviewDate = formatDate(addDays(new Date(), good ? 3 : 1));
-      
+      const intervalDays = score >= 80 ? 7 : score >= 60 ? 3 : 1;
+      const reviewDate = formatDate(addDays(new Date(), intervalDays));
+
+      let keywordAnalysis: { hitKeywords: string[]; missedKeywords: string[]; hitRate: number } | null = null;
+      if (kp) {
+        const keywords = kp.keywords && kp.keywords.length > 0
+          ? kp.keywords
+          : segmentChinese(kp.content).slice(0, 10);
+        keywordAnalysis = analyzeKeywords(userText, keywords);
+      }
+
+      const hitKeywordsDisplay = keywordAnalysis && keywordAnalysis.hitKeywords.length > 0
+        ? `\n\n✅ **关键词命中**：${keywordAnalysis.hitKeywords.map(kw => `「${kw}」`).join('、')}`
+        : '';
+      const missedKeywordsDisplay = keywordAnalysis && keywordAnalysis.missedKeywords.length > 0
+        ? `\n\n❌ **遗漏关键词**：${keywordAnalysis.missedKeywords.map(kw => `「${kw}」`).join('、')}`
+        : '';
+
+      const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+      const reviewDateObj = new Date(reviewDate);
+      const nextReviewDisplay = `\n\n📅 **下次复习**：${reviewDateObj.getMonth() + 1}月${reviewDateObj.getDate()}日（${weekdays[reviewDateObj.getDay()]}，${intervalDays}天后）`;
+
+      const baseMsg = good ? t.evaluateGood : t.evaluateImprove;
+      const kpContent = kp ? `**📖 ${kp.title}**\n${kp.content}\n` : '';
+      const scoreMsg = `**🎯 本次背诵评分：${score}/100**${score >= 80 ? ' ⭐ 优秀！' : score >= 60 ? ' 👍 不错' : ' 📚 还需努力'}`;
+
       return {
-        content: `${good ? t.evaluateGood : t.evaluateImprove}${kp ? `**📖 ${kp.title}**\n${kp.content}\n\n` : ''}**🎯 本次背诵评分：${score}/100**${score >= 80 ? ' ⭐ 优秀！' : score >= 60 ? ' 👍 不错' : ' 📚 还需努力'}\n\n${t.nextReview(reviewDate)}\n\n还要继续抽背其他知识点吗？`,
+        content: `${baseMsg}${kpContent}\n${scoreMsg}${hitKeywordsDisplay}${missedKeywordsDisplay}${nextReviewDisplay}`,
         type: 'text',
-        sideEffects: () => kp && useAppStore.getState().updateKnowledgeMastery(kp.id, masteryDelta),
-        suggestions: ['🎯 继续下一题', '📚 看看薄弱知识点', '⏱️ 来套小测检验'],
-        newFlow: { flow: 'recite', step: 3, context: { lastKpId: kpId } },
+        sideEffects: () => {
+          if (kp) {
+            useAppStore.getState().updateKnowledgeMastery(kp.id, masteryDelta);
+            useAppStore.getState().updateKnowledgeReviewDate(kp.id, score);
+          }
+        },
+        suggestions: ['🎯 继续同范围抽背', '📚 换章节', '✅ 结束抽背'],
+        newFlow: { flow: 'recite', step: 3, context: { lastKpId: kpId, reciteSubject, reciteChapters } },
       };
     }
     if (step === 3) {
-      if (intent.intent === 'recite_next' || keywordMatch(userText, ['继续', '下一个', '再来', '好的'])) {
-        const pool = mockKnowledgePoints.filter(kp => kp.mastery < 75);
-        const kp = pool[Math.floor(Math.random() * pool.length)] || mockKnowledgePoints[0];
+      const flowCtx = useAppStore.getState().flowState.context;
+      const { reciteSubject, reciteChapters } = flowCtx;
+
+      if (intent.intent === 'recite_next' || keywordMatch(userText, ['继续', '下一个', '再来', '好的', '同范围'])) {
+        let pool = mockKnowledgePoints;
+
+        if (reciteChapters && reciteChapters.length > 0) {
+          pool = pool.filter(kp => reciteChapters.includes(kp.chapter));
+        } else if (reciteSubject) {
+          pool = pool.filter(kp => kp.subject === reciteSubject);
+        }
+
+        const lowMasteryPool = pool.filter(kp => kp.mastery < 75);
+        const finalPool = lowMasteryPool.length > 0 ? lowMasteryPool : pool;
+        const kp = finalPool[Math.floor(Math.random() * finalPool.length)] || pool[0] || mockKnowledgePoints[0];
+
         return {
           content: t.asking(kp.title),
           type: 'text',
-          newFlow: { flow: 'recite', step: 2, context: { kpId: kp.id } },
+          newFlow: { flow: 'recite', step: 2, context: { kpId: kp.id, reciteSubject, reciteChapters } },
         };
       }
-      return { content: '好的，背诵抽查结束！你的知识点掌握度又提升啦 ✨ 接下来想做什么？', type: 'text', newFlow: { flow: 'idle', step: 0, context: {} },
-        suggestions: ['🎯 继续抽查', '📊 复盘本周进度', '📚 整理错题本'] };
+
+      if (keywordMatch(userText, ['换章节', '换范围', '选章节'])) {
+        const subjectName = reciteSubject as string | undefined;
+        const chapterList = getChapterList(subjectName);
+        return {
+          content: `请选择要抽查的章节：`,
+          type: 'options',
+          payload: {
+            chapters: chapterList.map(c => ({
+              id: c.id,
+              name: `${c.name}（${c.knowledgePoints}个知识点）`,
+            })),
+          },
+          suggestions: chapterList.slice(0, 4).map(c => c.name),
+          newFlow: { flow: 'recite', step: 1, context: { subjectName } },
+        };
+      }
+
+      if (keywordMatch(userText, ['结束', '退出', '不抽了', '停止'])) {
+        return {
+          content: '好的，背诵抽查结束！你的知识点掌握度又提升啦 ✨ 接下来想做什么？',
+          type: 'text',
+          newFlow: { flow: 'idle', step: 0, context: {} },
+          suggestions: ['🎯 继续抽查', '📊 复盘本周进度', '📚 整理错题本', '⏱️ 来套小测'],
+        };
+      }
+
+      return {
+        content: '好的，背诵抽查结束！你的知识点掌握度又提升啦 ✨ 接下来想做什么？',
+        type: 'text',
+        newFlow: { flow: 'idle', step: 0, context: {} },
+        suggestions: ['🎯 继续抽查', '📊 复盘本周进度', '📚 整理错题本'],
+      };
     }
     return { content: t.chooseChapter, type: 'text', newFlow: { flow: 'recite', step: 1, context: {} } };
   }
@@ -773,13 +852,30 @@ export class FlowController {
   static handleQuiz(intent: IntentResult, ctx: Record<string, any>, userText: string): EngineResponse {
     const t = responseTemplates.quiz;
     const step = ctx.step ?? 0;
+    const store = useAppStore.getState();
 
     if (step === 0 || intent.intent === 'start_quiz') {
+      const subjectName = findSubjectName(userText, mockSubjects.map(s => s.name));
+      const n = extractNumber(userText);
+      const count = keywordMatch(userText, ['10题', '随机10', '综合', '一套']) ? 10 : (n || undefined);
+
+      if (subjectName || count) {
+        store.setQuizPreset({ subject: subjectName || undefined, count });
+      } else {
+        store.setQuizPreset(null);
+      }
+
+      store.setActiveModal('quiz');
+
+      const presetMsg = (subjectName || count)
+        ? `已为你打开测验配置页${subjectName ? `，科目：${subjectName}` : ''}${count ? `，题量：${count}题` : ''}。请在弹窗中确认配置后开始测验～`
+        : '已为你打开测验配置页，请选择科目、题量和时间模式后开始测验～';
+
       return {
-        content: t.chooseRange,
-        type: 'options',
-        suggestions: ['🎲 随机10题综合测验', '📖 政治 5题', '🔢 数学 5题', '💻 专业课 5题'],
-        newFlow: { flow: 'quiz', step: 1, context: {} },
+        content: presetMsg,
+        type: 'text',
+        newFlow: { flow: 'idle', step: 0, context: {} },
+        suggestions: [],
       };
     }
     if (step === 1 || intent.intent === 'quiz_config') {

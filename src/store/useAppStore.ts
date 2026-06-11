@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { AppStore, FlowType, Message, StudyTask, WrongQuestion, KnowledgePoint, QuizQuestion, QuizRecord, ExamInfo, WeeklyProgress, ModalType } from './types';
+import type { AppStore, FlowType, Message, StudyTask, WrongQuestion, KnowledgePoint, QuizQuestion, QuizRecord, ExamInfo, WeeklyProgress, ModalType, QuizPreset } from './types';
 import { getRandomGreeting } from '@/data/templates';
 import { mockKnowledgePoints, mockSubjects } from '@/data/knowledge';
 import { uid } from '@/utils/stringUtils';
@@ -199,6 +199,7 @@ export const useAppStore = create<AppStore>()(
         currentQuizIndex: 0,
         currentKnowledgeIndex: 0,
         selectedChapters: [],
+        quizPreset: null,
 
         addMessage: (msg) => set(s => ({
           messages: [...s.messages, { ...msg, id: uid('msg-'), timestamp: Date.now() }],
@@ -333,9 +334,9 @@ export const useAppStore = create<AppStore>()(
             const intervals = [1, 3, 7, 15, 30];
             let intervalDays: number;
             if (score >= 80) {
-              intervalDays = 3;
+              intervalDays = 7;
             } else if (score >= 60) {
-              intervalDays = 2;
+              intervalDays = 3;
             } else {
               intervalDays = 1;
             }
@@ -368,6 +369,10 @@ export const useAppStore = create<AppStore>()(
         setCurrentKnowledgeIndex: (idx: number) => set({ currentKnowledgeIndex: idx }),
 
         setSelectedChapters: (chapters: string[]) => set({ selectedChapters: chapters }),
+
+        setQuizPreset: (preset: QuizPreset | null) => set({ quizPreset: preset }),
+
+        clearQuizPreset: () => set({ quizPreset: null }),
 
         resetAll: () => set({
           messages: [initialMessage],

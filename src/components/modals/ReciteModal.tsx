@@ -132,8 +132,11 @@ export default function ReciteModal() {
   const currentKp = pool[currentIdx % pool.length];
 
   const keywordAnalysis = useMemo(() => {
-    if (!scored || !currentKp?.keywords) return null;
-    return analyzeKeywords(userAnswer, currentKp.keywords);
+    if (!scored) return null;
+    const ref = currentKp?.keywords && currentKp.keywords.length > 0
+      ? currentKp.keywords
+      : currentKp?.content || '';
+    return analyzeKeywords(userAnswer, ref);
   }, [scored, userAnswer, currentKp]);
 
   const handleScore = () => {
@@ -257,14 +260,30 @@ export default function ReciteModal() {
     });
   };
 
+  const handleContinueSame = () => {
+    handleNext();
+  };
+
+  const handleChangeChapter = () => {
+    setSelectedChapters(new Set());
+    setCurrentIdx(0);
+    setShowAnswer(false);
+    setUserAnswer('');
+    setScored(null);
+  };
+
+  const handleEndRecite = () => {
+    setActiveModal(null);
+  };
+
   const renderReviewCard = () => {
     if (!scored || !currentKp) return null;
     const reviewCount = currentKp.reviewCount ?? 0;
     let intervalDays: number;
     if (scored.score >= 80) {
-      intervalDays = 3;
+      intervalDays = 7;
     } else if (scored.score >= 60) {
-      intervalDays = 2;
+      intervalDays = 3;
     } else {
       intervalDays = 1;
     }
@@ -283,7 +302,7 @@ export default function ReciteModal() {
             <div className="text-xs text-slate-500">基于艾宾浩斯遗忘曲线</div>
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-3 gap-3 mb-4">
           <div className="bg-white/70 rounded-xl p-3 text-center">
             <div className="text-xs text-slate-500 mb-1">下次复习</div>
             <div className="text-lg font-bold text-violet-600">
@@ -303,6 +322,26 @@ export default function ReciteModal() {
             <div className="text-lg font-bold text-fuchsia-600">第 {reviewCount} 次</div>
             <div className="text-xs text-slate-400">共 {Math.min(reviewCount, 5)} 阶段</div>
           </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <button
+            onClick={handleContinueSame}
+            className="btn-primary !py-2 text-xs"
+          >
+            🎯 继续同范围
+          </button>
+          <button
+            onClick={handleChangeChapter}
+            className="btn-secondary !py-2 text-xs"
+          >
+            📚 换章节
+          </button>
+          <button
+            onClick={handleEndRecite}
+            className="btn-secondary !py-2 text-xs"
+          >
+            ✅ 结束抽背
+          </button>
         </div>
       </div>
     );
@@ -424,11 +463,11 @@ export default function ReciteModal() {
                       <div className="flex items-center justify-between mb-4">
                         <div className="flex items-center gap-2">
                           <Brain className="w-5 h-5 text-slate-600" />
-                          <h3 className="font-semibold text-slate-700">关键点分析</h3>
+                          <h3 className="font-semibold text-slate-700">关键词命中分析</h3>
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-sm text-slate-500">
-                            命中 {keywordAnalysis.hit.length}/{keywordAnalysis.hit.length + keywordAnalysis.missed.length}
+                            命中 {keywordAnalysis.hitKeywords.length}/{keywordAnalysis.hitKeywords.length + keywordAnalysis.missedKeywords.length} 个关键词
                           </span>
                           <div className="w-32 h-2 rounded-full bg-slate-200 overflow-hidden">
                             <div
@@ -442,14 +481,14 @@ export default function ReciteModal() {
                         </div>
                       </div>
                       <div className="space-y-3">
-                        {keywordAnalysis.hit.length > 0 && (
+                        {keywordAnalysis.hitKeywords.length > 0 && (
                           <div>
                             <div className="text-xs font-medium text-emerald-700 mb-2 flex items-center gap-1">
                               <CheckCircle2 className="w-3.5 h-3.5" />
-                              命中的关键点
+                              命中的关键词
                             </div>
                             <div className="flex flex-wrap gap-1.5">
-                              {keywordAnalysis.hit.map(kw => (
+                              {keywordAnalysis.hitKeywords.map(kw => (
                                 <span
                                   key={kw}
                                   className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-700 text-xs font-medium border border-emerald-200"
@@ -460,14 +499,14 @@ export default function ReciteModal() {
                             </div>
                           </div>
                         )}
-                        {keywordAnalysis.missed.length > 0 && (
+                        {keywordAnalysis.missedKeywords.length > 0 && (
                           <div>
                             <div className="text-xs font-medium text-rose-700 mb-2 flex items-center gap-1">
                               <XCircle className="w-3.5 h-3.5" />
-                              遗漏的关键点
+                              遗漏的关键词
                             </div>
                             <div className="flex flex-wrap gap-1.5">
-                              {keywordAnalysis.missed.map(kw => (
+                              {keywordAnalysis.missedKeywords.map(kw => (
                                 <span
                                   key={kw}
                                   className="px-2.5 py-1 rounded-lg bg-rose-50 text-rose-400 text-xs font-medium border border-rose-100 line-through opacity-60"

@@ -158,10 +158,20 @@ export function segmentChinese(text: string): string[] {
   return [...new Set(words)];
 }
 
-export function analyzeKeywords(userAnswer: string, keywords: string[]): { hit: string[]; missed: string[]; hitRate: number } {
+export function analyzeKeywords(userAnswer: string, reference: string | string[]): {
+  hitKeywords: string[];
+  missedKeywords: string[];
+  hitRate: number;
+} {
+  let keywords: string[] = [];
+  if (Array.isArray(reference)) {
+    keywords = reference;
+  } else {
+    keywords = segmentChinese(reference);
+  }
   const userTokens = segmentChinese(userAnswer);
-  const hit: string[] = [];
-  const missed: string[] = [];
+  const hitKeywords: string[] = [];
+  const missedKeywords: string[] = [];
   for (const kw of keywords) {
     const kwClean = kw.trim();
     if (!kwClean) continue;
@@ -179,12 +189,12 @@ export function analyzeKeywords(userAnswer: string, keywords: string[]): { hit: 
       }
     }
     if (isHit) {
-      hit.push(kwClean);
+      hitKeywords.push(kwClean);
     } else {
-      missed.push(kwClean);
+      missedKeywords.push(kwClean);
     }
   }
-  const total = hit.length + missed.length;
-  const hitRate = total === 0 ? 0 : hit.length / total;
-  return { hit, missed, hitRate };
+  const total = hitKeywords.length + missedKeywords.length;
+  const hitRate = total === 0 ? 0 : hitKeywords.length / total;
+  return { hitKeywords, missedKeywords, hitRate };
 }

@@ -125,6 +125,14 @@ export interface FlowState {
   context: Record<string, any>;
 }
 
+export interface QuizPreset {
+  subject?: string;
+  count?: number;
+  timeMode?: QuizTimeMode;
+  perQuestionSeconds?: number;
+  totalMinutes?: number;
+}
+
 export interface AppState {
   messages: Message[];
   flowState: FlowState;
@@ -141,6 +149,7 @@ export interface AppState {
   currentQuizIndex: number;
   currentKnowledgeIndex: number;
   selectedChapters: string[];
+  quizPreset: QuizPreset | null;
 }
 
 export interface AppActions {
@@ -162,6 +171,8 @@ export interface AppActions {
   answerQuizQuestion: (questionIdx: number, answerIdx: number) => void;
   setCurrentKnowledgeIndex: (idx: number) => void;
   setSelectedChapters: (chapters: string[]) => void;
+  setQuizPreset: (preset: QuizPreset | null) => void;
+  clearQuizPreset: () => void;
   resetAll: () => void;
   addMockData: () => void;
   updateWeeklyProgress: (date: string, patch: Partial<WeeklyProgress>) => void;
