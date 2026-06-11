@@ -1,6 +1,28 @@
-import { X, BarChart3, TrendingUp, Target, BookX, Brain, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
+import { X, BarChart3, TrendingUp, Target, BookX, Brain, Clock, CheckCircle2, AlertCircle, AlertTriangle } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell } from 'recharts';
+import { formatDate, addDays } from '@/utils/dateUtils';
+import { ERROR_TAGS, type ErrorTagType } from '@/store/types';
+
+const ERROR_TAG_COLORS: Record<ErrorTagType, string> = {
+  '概念混淆': '#6366F1',
+  '审题失误': '#F59E0B',
+  '计算错误': '#EF4444',
+  '记忆疏漏': '#8B5CF6',
+  '方法不当': '#10B981',
+  '时间不足': '#EC4899',
+  '其他': '#64748B',
+};
+
+const ERROR_TAG_SUGGESTIONS: Record<ErrorTagType, string> = {
+  '概念混淆': '建议制作概念对比表格，每天花5分钟辨析易混概念的本质区别。',
+  '审题失误': '建议读题时圈画关键词，先明确题目要求再作答，避免答非所问。',
+  '计算错误': '建议分步计算、回头验算，总结常见计算陷阱，整理计算失误清单。',
+  '记忆疏漏': '建议使用艾宾浩斯记忆曲线，每天安排20分钟进行关键词填空默写。',
+  '方法不当': '建议整理同类题型的多种解法，归纳最优解题路径，形成方法库。',
+  '时间不足': '建议限时训练，合理分配各题型用时，遇到难题先跳过回头再做。',
+  '其他': '建议分析具体原因，针对性制定改进策略，持续复盘优化。',
+};
 
 export default function ProgressModal() {
   const activeModal = useAppStore(s => s.activeModal);
@@ -40,11 +62,53 @@ export default function ProgressModal() {
     掌握度: kp.mastery,
   }));
 
+  const fourteenDaysAgo = formatDate(addDays(new Date(), -14));
+  const recentWrong = wrongQuestions.filter(wq => formatDate(new Date(wq.addedAt)) >= fourteenDaysAgo);
+  const chapterWrongCount: Record<string, number> = {};
+  recentWrong.forEach(wq => {
+    chapterWrongCount[wq.chapter] = (chapterWrongCount[wq.chapter] || 0) + 1;
+  });
+  const weakChapters = Object.entries(chapterWrongCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([chapter, count]) => {
+      const chapterKps = knowledgePoints.filter(kp => kp.chapter === chapter);
+      const weakestKps = [...chapterKps].sort((a, b) => a.mastery - b.mastery).slice(0, 2);
+      return {
+        chapter,
+        count,
+        weakPoints: weakestKps.map(kp => kp.title),
+      };
+    });
+
+  const weakChapterChartData = weakChapters.map(wc => ({
+    name: wc.chapter.length > 8 ? wc.chapter.slice(0, 8) + '...' : wc.chapter,
+    fullName: wc.chapter,
+    错题数: wc.count,
+  }));
+
+  const errorTagCount: Record<string, number> = {};
+  wrongQuestions.forEach(wq => {
+    if (wq.errorTags && wq.errorTags.length > 0) {
+      wq.errorTags.forEach(tag => {
+        errorTagCount[tag] = (errorTagCount[tag] || 0) + 1;
+      });
+    }
+  });
+  const pieData = Object.entries(errorTagCount).map(([name, value]) => ({
+    name,
+    value,
+  }));
+  if (pieData.length === 0 && wrongTotal > 0) {
+    pieData.push({ name: '未标注', value: wrongTotal });
+  }
+
   const suggestions: string[] = [];
   if (hourRate < 70) suggestions.push('使用番茄工作法固定每日学习时段，早间黄金时间优先安排薄弱科目。');
   if (completionRate < 60) suggestions.push('将大任务拆分成 25-40 分钟的小任务，完成后勾选会更有成就感。');
   if (masteryAvg < 65) suggestions.push('每天安排 20 分钟进行知识点抽查，重点关注掌握度<50%的条目。');
   if (wrongTotal > 0 && wrongReviewed < wrongTotal) suggestions.push('今天先复习完待复习的错题，再开始新内容的学习。');
+  if (weakChapters.length > 0) suggestions.push(`优先攻克薄弱章节：${weakChapters.slice(0, 2).map(w => w.chapter).join('、')}，集中突破易错点。`);
   if (suggestions.length === 0) suggestions.push('继续保持这个节奏！可以适当增加模拟测验频率，提前适应考试节奏。');
 
   const strengths: string[] = [];
@@ -148,6 +212,125 @@ export default function ProgressModal() {
                   <Bar dataKey="实际时长" fill="#3B82F6" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-6">
+            <div className="glass-panel p-5">
+              <h3 className="font-semibold text-slate-700 mb-4 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-500" />
+                薄弱章节分析（近14天）
+              </h3>
+              {weakChapters.length === 0 ? (
+                <div className="h-56 flex flex-col items-center justify-center text-center">
+                  <BookX className="w-10 h-10 text-slate-200 mb-2" />
+                  <p className="text-sm text-slate-400">近14天暂无错题，继续保持！</p>
+                </div>
+              ) : (
+                <>
+                  <div className="h-40 mb-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={weakChapterChartData} layout="vertical">
+                        <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
+                        <XAxis type="number" tick={{ fontSize: 12 }} stroke="#94A3B8" />
+                        <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} stroke="#94A3B8" width={70} />
+                        <Tooltip
+                          contentStyle={{
+                            borderRadius: '12px',
+                            border: 'none',
+                            boxShadow: '0 10px 40px -10px rgba(0,0,0,0.2)',
+                          }}
+                          formatter={(value: number, _name: string, props: any) => [
+                            `${value} 道错题`,
+                            props.payload.fullName,
+                          ]}
+                        />
+                        <Bar dataKey="错题数" fill="#F43F5E" radius={[0, 6, 6, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="space-y-2">
+                    {weakChapters.map((wc, i) => (
+                      <div key={wc.chapter} className="p-2.5 rounded-lg bg-rose-50/50 border border-rose-100">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-semibold text-slate-700">
+                            {i + 1}. {wc.chapter}
+                          </span>
+                          <span className="text-xs font-bold text-rose-600">{wc.count}题</span>
+                        </div>
+                        {wc.weakPoints.length > 0 && (
+                          <p className="text-[11px] text-slate-500">
+                            建议重点复习：<span className="text-rose-600 font-medium">{wc.weakPoints.join('、')}</span>
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="glass-panel p-5">
+              <h3 className="font-semibold text-slate-700 mb-4 flex items-center gap-2">
+                <Target className="w-4 h-4 text-violet-500" />
+                错因分布
+              </h3>
+              {pieData.length === 0 ? (
+                <div className="h-56 flex flex-col items-center justify-center text-center">
+                  <Brain className="w-10 h-10 text-slate-200 mb-2" />
+                  <p className="text-sm text-slate-400">暂无错因标签数据</p>
+                  <p className="text-xs text-slate-300 mt-1">去错题本给错题添加错因标签吧</p>
+                </div>
+              ) : (
+                <>
+                  <div className="h-48">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={pieData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={45}
+                          outerRadius={75}
+                          paddingAngle={3}
+                          dataKey="value"
+                        >
+                          {pieData.map((entry, index) => (
+                            <Cell
+                              key={`cell-${index}`}
+                              fill={ERROR_TAG_COLORS[entry.name as ErrorTagType] || '#94A3B8'}
+                            />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          contentStyle={{
+                            borderRadius: '12px',
+                            border: 'none',
+                            boxShadow: '0 10px 40px -10px rgba(0,0,0,0.2)',
+                          }}
+                          formatter={(value: number, name: string) => [
+                            `${value} 题 · ${ERROR_TAG_SUGGESTIONS[name as ErrorTagType] || '继续加油'}`,
+                            name,
+                          ]}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5 mt-2">
+                    {pieData.map((item) => (
+                      <div key={item.name} className="flex items-center gap-1.5">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full shrink-0"
+                          style={{ backgroundColor: ERROR_TAG_COLORS[item.name as ErrorTagType] || '#94A3B8' }}
+                        />
+                        <span className="text-[11px] text-slate-600 truncate">
+                          {item.name} {item.value}题
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           </div>
 

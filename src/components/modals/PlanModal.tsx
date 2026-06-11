@@ -2,18 +2,31 @@ import { X, CalendarDays, CheckCircle2, Clock, Target } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { formatDate, isToday, countdownText } from '@/utils/dateUtils';
 
+function formatDuration(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (h === 0) return `${m}分钟`;
+  if (m === 0) return `${h}小时`;
+  return `${h}小时${m}分`;
+}
+
 export default function PlanModal() {
   const activeModal = useAppStore(s => s.activeModal);
   const setActiveModal = useAppStore(s => s.setActiveModal);
   const examInfo = useAppStore(s => s.examInfo);
   const tasks = useAppStore(s => s.tasks);
   const toggleTask = useAppStore(s => s.toggleTask);
+  const getTodayPlannedMinutes = useAppStore(s => s.getTodayPlannedMinutes);
+  const getTodayCompletedMinutes = useAppStore(s => s.getTodayCompletedMinutes);
 
   if (activeModal !== 'plan') return null;
 
   const today = formatDate(new Date());
   const todayTasks = tasks.filter(t => t.date === today);
   const futureTasks = tasks.filter(t => t.date > today).slice(0, 20);
+  const plannedMinutes = getTodayPlannedMinutes();
+  const completedMinutes = getTodayCompletedMinutes();
+  const progressPercent = plannedMinutes > 0 ? Math.min(100, Math.round((completedMinutes / plannedMinutes) * 100)) : 0;
   const priorityStyles: Record<string, string> = {
     high: 'bg-rose-100 text-rose-700 border-rose-200',
     medium: 'bg-amber-100 text-amber-700 border-amber-200',
@@ -80,6 +93,24 @@ export default function PlanModal() {
                     {todayTasks.filter(t => t.completed).length}/{todayTasks.length}
                   </span>
                 </div>
+                {todayTasks.length > 0 && (
+                  <div className="mb-4 p-4 glass-panel">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-slate-600">
+                        已完成 <span className="font-bold text-brand-600">{completedMinutes}</span> 分钟 / 计划共 <span className="font-bold text-slate-700">{plannedMinutes}</span> 分钟
+                      </span>
+                      <span className="text-sm font-bold bg-gradient-to-r from-emerald-500 to-brand-600 bg-clip-text text-transparent">
+                        {progressPercent}%
+                      </span>
+                    </div>
+                    <div className="w-full h-3 rounded-full bg-slate-100 overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-emerald-400 via-teal-500 to-brand-500 transition-all duration-500 ease-out"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-2">
                   {todayTasks.length === 0 ? (
                     <div className="text-center py-8 text-slate-400 text-sm">
@@ -114,7 +145,7 @@ export default function PlanModal() {
                             </span>
                             <span className="text-xs text-slate-400 flex items-center gap-1">
                               <Clock className="w-3 h-3" />
-                              {task.duration}分钟
+                              {formatDuration(task.duration)}
                             </span>
                           </div>
                         </div>

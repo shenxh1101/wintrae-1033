@@ -1,7 +1,8 @@
-import type { FlowType, Message, StudyTask, WrongQuestion, ExamInfo, QuizQuestion } from '@/store/types';
+import type { FlowType, Message, StudyTask, WrongQuestion, ExamInfo, QuizQuestion, ErrorTagType } from '@/store/types';
+import { ERROR_TAGS } from '@/store/types';
 import { useAppStore } from '@/store/useAppStore';
 import { parseSubjects, findSubjectName, parseMCAnswer, parseWrongQuestion, keywordMatch, answerScore, uid, extractNumber } from '@/utils/stringUtils';
-import { parseDateInput, parseHoursInput, formatDate, addDays, isToday, getEbbinghausDates } from '@/utils/dateUtils';
+import { parseDateInput, parseHoursInput, formatDate, addDays, isToday, getEbbinghausDates, getWeekDates } from '@/utils/dateUtils';
 import { mockKnowledgePoints, mockSubjects } from '@/data/knowledge';
 import { getRandomQuestions } from '@/data/questions';
 import { responseTemplates, getRandomFallback } from '@/data/templates';
@@ -134,10 +135,21 @@ export class IntentParser {
       return { intent: 'wrong_submit', flowType: 'wrongbook', entities: { parsed, raw: text }, confidence: parsed ? 10 : 5 };
     }
     if (step === 1) {
+      const selectedTags = ERROR_TAGS.filter(tag => text.includes(tag));
+      if (selectedTags.length > 0) {
+        return { intent: 'wrong_error_tags', flowType: 'wrongbook', entities: { errorTags: selectedTags }, confidence: 10 };
+      }
+      const skip = keywordMatch(text, ['跳过', '不选', '下一步', '继续']);
+      if (skip) {
+        return { intent: 'wrong_error_tags_skip', flowType: 'wrongbook', entities: {}, confidence: 10 };
+      }
+      return { intent: 'wrong_error_tags_custom', flowType: 'wrongbook', entities: { customTag: text.trim() }, confidence: 8 };
+    }
+    if (step === 2) {
       const yes = keywordMatch(text, ['好', '来', '要', '开始', '可以', 'yes']);
       return { intent: yes ? 'wrong_do_similar' : 'wrong_skip_similar', flowType: yes ? 'wrongbook' : 'idle', entities: {}, confidence: 10 };
     }
-    if (step === 2) {
+    if (step === 3) {
       const ans = parseMCAnswer(text);
       return { intent: 'wrong_similar_answer', flowType: 'wrongbook', entities: { answer: ans ?? -1 }, confidence: 8 };
     }
@@ -367,39 +379,90 @@ export class FlowController {
         addedAt: Date.now(),
         reviewCount: 0,
         nextReviewDate: getEbbinghausDates()[0],
-        similarQuestions: FlowController.generateSimilar(parsed || { question: userText, options: [] }),
+        errorTags: [],
       };
 
-      const suggestText = wq.similarQuestions && wq.similarQuestions.length > 0 ? t.received : `${t.received}\n\n（当前暂未生成相似题，已帮你收录错题并安排复习计划）`;
-      const suggestions = wq.similarQuestions?.length ? ['✅ 开始做相似题巩固', '📚 查看错题本', '💡 换个功能试试'] : ['📚 查看错题本', '💡 换个功能试试'];
-
+      const tagOptions = ERROR_TAGS.map(tag => `${tag}`);
       return {
-        content: suggestText,
-        type: 'card',
-        payload: { wrongQuestion: wq, similar: wq.similarQuestions },
-        suggestions,
+        content: `✅ 已收录这道错题！\n\n现在请选择这道题的**错因标签**（可多选），帮助我更精准地为你生成针对性练习：\n\n${tagOptions.map((tag, i) => `${i + 1}. ${tag}`).join('\n')}\n\n你可以直接输入标签名称，或输入序号，也可以输入"跳过"暂不选择。`,
+        type: 'options',
+        payload: { options: tagOptions, wqId: wq.id },
+        suggestions: [...tagOptions.slice(0, 4), '⏭️ 跳过，不选标签'],
         sideEffects: () => useAppStore.getState().addWrongQuestion(wq),
-        newFlow: { flow: 'wrongbook', step: 2, context: { wqId: wq.id, similarIdx: 0 } },
+        newFlow: { flow: 'wrongbook', step: 2, context: { wqId: wq.id } },
       };
     }
     if (step === 2) {
+      const { wqId } = useAppStore.getState().flowState.context;
+      let errorTags: ErrorTagType[] = [];
+      
+      if (intent.intent === 'wrong_error_tags') {
+        errorTags = ctx.errorTags || [];
+      } else if (intent.intent === 'wrong_error_tags_custom') {
+        const customTag = ctx.customTag || userText.trim();
+        if (ERROR_TAGS.includes(customTag as ErrorTagType)) {
+          errorTags = [customTag as ErrorTagType];
+        } else {
+          const matched = ERROR_TAGS.filter(tag => userText.includes(tag));
+          if (matched.length > 0) {
+            errorTags = matched;
+          } else {
+            errorTags = [customTag as ErrorTagType];
+          }
+        }
+      }
+
+      if (errorTags.length > 0 || intent.intent !== 'wrong_error_tags_skip') {
+        const store = useAppStore.getState();
+        const updated = store.wrongQuestions.map(wq =>
+          wq.id === wqId ? { ...wq, errorTags } : wq
+        );
+        useAppStore.setState({ wrongQuestions: updated });
+      }
+
+      const currentWq = useAppStore.getState().wrongQuestions.find(w => w.id === wqId);
+      const similar = FlowController.generateSimilarWithTags(
+        currentWq || { question: userText, options: [], errorTags: [] },
+        errorTags
+      );
+      
+      if (similar.length > 0 && currentWq) {
+        const store = useAppStore.getState();
+        const updated = store.wrongQuestions.map(wq =>
+          wq.id === wqId ? { ...wq, similarQuestions: similar } : wq
+        );
+        useAppStore.setState({ wrongQuestions: updated });
+      }
+
+      const hasTags = errorTags.length > 0;
+      return {
+        content: hasTags 
+          ? `✅ 已保存错因标签：${errorTags.join('、')}\n\n根据这些错因，我为你准备了${similar.length}道针对性相似练习。要不要现在开始做？`
+          : '好的，已帮你收录错题并安排了复习计划。要不要做几道相似题巩固一下？',
+        type: 'text',
+        suggestions: ['✅ 开始做相似题巩固', '📚 查看错题本', '💡 换个功能试试'],
+        newFlow: { flow: 'wrongbook', step: 3, context: { wqId, similarIdx: 0 } },
+      };
+    }
+    if (step === 3) {
       if (intent.intent === 'wrong_do_similar' || keywordMatch(userText, ['好', '要', '来', '开始', '做'])) {
         const store = useAppStore.getState();
         const wq = store.wrongQuestions[store.wrongQuestions.length - 1];
         if (wq?.similarQuestions?.length) {
           const sq = wq.similarQuestions[0];
+          const tagHint = sq.targetErrorTag ? `\n\n🎯 针对错因：**${sq.targetErrorTag}**` : '';
           return {
-            content: `好的！来做这道相似题巩固一下：\n\n**${sq.question}**\n\n${sq.options?.join('\n') || '请在输入框作答'}`,
+            content: `好的！来做这道相似题巩固一下：${tagHint}\n\n**${sq.question}**\n\n${sq.options?.join('\n') || '请在输入框作答'}`,
             type: 'options',
             payload: { options: sq.options, answer: sq.answer },
             suggestions: sq.options,
-            newFlow: { flow: 'wrongbook', step: 3, context: { similarIdx: 0, wqId: wq.id } },
+            newFlow: { flow: 'wrongbook', step: 4, context: { similarIdx: 0, wqId: wq.id } },
           };
         }
       }
       return { content: '好的！这道题已经安排好复习时间了，到时会提醒你。想继续整理其他错题吗？', type: 'text', newFlow: { flow: 'idle', step: 0, context: {} }, suggestions: ['📝 继续整理错题', '📚 查看错题本', '⏱️ 模拟小测'] };
     }
-    if (step === 3 || intent.intent === 'wrong_similar_answer') {
+    if (step === 4 || intent.intent === 'wrong_similar_answer') {
       const userAnswer = ctx.answer;
       return {
         content: userAnswer >= 0 && userAnswer <= 3 ? `你选择了第${userAnswer + 1}个选项。很好！不管对错，做过一遍就加深了印象 💪\n\n解析：这道题考察的是同一个知识点的变体，注意抓住核心原理，举一反三。` : '收到你的回答！多做多练，错题本就是你进步的见证 ✨',
@@ -409,6 +472,56 @@ export class FlowController {
       };
     }
     return { content: t.askForQuestion, type: 'text', newFlow: { flow: 'wrongbook', step: 1, context: {} } };
+  }
+
+  static generateSimilarWithTags(base: { question: string; options?: string[]; errorTags?: string[] }, tags: ErrorTagType[]): WrongQuestion['similarQuestions'] {
+    const activeTags = tags.length > 0 ? tags : ['其他'];
+    const totalQuestions = Math.min(Math.max(activeTags.length + 2, 3), 5);
+    const questionsPerTag = Math.ceil(totalQuestions / activeTags.length);
+    
+    return activeTags.flatMap((tag, tagIdx) => {
+      return Array.from({ length: questionsPerTag }, (_, i) => {
+        const baseText = base.question.slice(0, 20);
+        const tagSpecific: Record<ErrorTagType, { q: string; opts: string[] }> = {
+          '概念混淆': {
+            q: `（概念辨析）关于「${baseText}...」相关概念，下列说法正确的是？`,
+            opts: base.options?.length ? base.options : ['A. 概念甲的定义', 'B. 概念乙的定义', 'C. 易混淆概念对比', 'D. 综合应用判断'],
+          },
+          '审题失误': {
+            q: `（审题训练）仔细阅读：${base.question.slice(0, 50)}...下列理解正确的是？`,
+            opts: base.options?.length ? [...base.options].reverse() : ['A. 偷换概念选项', 'B. 以偏概全选项', 'C. 正确理解', 'D. 过度推断选项'],
+          },
+          '计算错误': {
+            q: `（计算变式）同类计算：${baseText}...，计算结果是？`,
+            opts: base.options?.length ? base.options : ['A. 计算结果1', 'B. 计算结果2', 'C. 计算结果3', 'D. 计算结果4'],
+          },
+          '记忆疏漏': {
+            q: `（关键词回忆）填空：关于${baseText}...，核心关键词是？`,
+            opts: base.options?.length ? base.options : ['A. 关键词1', 'B. 关键词2', 'C. 关键词3', 'D. 关键词4'],
+          },
+          '方法不当': {
+            q: `（方法优化）对于「${baseText}...」，最优解题方法是？`,
+            opts: base.options?.length ? base.options : ['A. 方法甲', 'B. 方法乙', 'C. 最优方法', 'D. 方法丁'],
+          },
+          '时间不足': {
+            q: `（快速解题）限时训练：${base.question.slice(0, 40)}...快速选出正确答案？`,
+            opts: base.options?.length ? base.options : ['A. 速解选项1', 'B. 速解选项2', 'C. 速解选项3', 'D. 速解选项4'],
+          },
+          '其他': {
+            q: `（变式练习）${base.question.slice(0, 30)}...的变式题，正确选项是？`,
+            opts: base.options?.length ? base.options : ['A. 变式选项1', 'B. 变式选项2', 'C. 变式选项3', 'D. 变式选项4'],
+          },
+        };
+        const variant = tagSpecific[tag] || tagSpecific['其他'];
+        return {
+          id: uid('sq-'),
+          question: variant.q,
+          options: variant.opts,
+          answer: String.fromCharCode(65 + ((i + tagIdx) % 4)),
+          targetErrorTag: tag,
+        };
+      });
+    }).slice(0, totalQuestions);
   }
 
   static generateSimilar(base: { question: string; options: string[] }) {
@@ -582,6 +695,7 @@ export class FlowController {
                 addedAt: Date.now(),
                 reviewCount: 0,
                 nextReviewDate: getEbbinghausDates()[0],
+                errorTags: [],
               });
             }
           });
@@ -608,6 +722,41 @@ export class FlowController {
     const wrongTotal = store.wrongQuestions.length;
     const masteryAvg = Math.round(store.knowledgePoints.reduce((s, kp) => s + kp.mastery, 0) / (store.knowledgePoints.length || 1));
 
+    const weekDates = getWeekDates();
+    const thisWeekWrong = store.wrongQuestions.filter(wq => weekDates.includes(formatDate(new Date(wq.addedAt))));
+    const chapterStats: Record<string, number> = {};
+    thisWeekWrong.forEach(wq => {
+      chapterStats[wq.chapter] = (chapterStats[wq.chapter] || 0) + 1;
+    });
+    const topErrorChapters = Object.entries(chapterStats)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([chapter, count]) => {
+        const chapterKps = store.knowledgePoints.filter(kp => kp.chapter === chapter);
+        const weakest = [...chapterKps].sort((a, b) => a.mastery - b.mastery).slice(0, 2);
+        return {
+          chapter,
+          count,
+          ratio: thisWeekWrong.length ? Math.round((count / thisWeekWrong.length) * 100) : 0,
+          suggestions: weakest.length > 0 
+            ? `建议重点复习：${weakest.map(kp => kp.title).join('、')}` 
+            : '建议回归教材精读本章核心概念，配合课后习题巩固。',
+        };
+      });
+
+    const errorTagStats: Record<string, number> = {};
+    store.wrongQuestions.forEach(wq => {
+      if (wq.errorTags && wq.errorTags.length > 0) {
+        wq.errorTags.forEach(tag => {
+          errorTagStats[tag] = (errorTagStats[tag] || 0) + 1;
+        });
+      }
+    });
+    const errorTagDistribution = Object.entries(errorTagStats).map(([tag, count]) => ({
+      tag,
+      count,
+    }));
+
     const goodParts: string[] = [];
     const badParts: string[] = [];
     const suggestions: string[] = [];
@@ -625,12 +774,30 @@ export class FlowController {
     if (completionRate < 60) suggestions.push('🔸 建议：将大任务拆分成 25-40 分钟的小任务，完成后勾选会更有成就感。');
     if (masteryAvg < 65) suggestions.push('🔸 建议：每天安排 20 分钟进行知识点抽查，重点关注掌握度<50%的条目。');
     if (wrongTotal > 0 && wrongReviewed < wrongTotal) suggestions.push('🔸 建议：今天先复习完待复习的错题，再开始新内容的学习。');
+    if (topErrorChapters.length > 0) {
+      suggestions.push(`🔸 本周最易错章节：**${topErrorChapters[0].chapter}**（${topErrorChapters[0].count}题）。${topErrorChapters[0].suggestions}`);
+    }
     if (suggestions.length === 0) suggestions.push('🔸 继续保持这个节奏！可以适当增加模拟测验频率，提前适应考试节奏。');
 
+    const topChaptersMd = topErrorChapters.length > 0
+      ? `\n\n### 🎯 本周易错章节 TOP3\n${topErrorChapters.map((c, i) => `| 排名 | 章节 | 错题数 | 占比 | 建议 |\n| --- | --- | --- | --- | --- |\n| ${i + 1} | ${c.chapter} | ${c.count}题 | ${c.ratio}% | ${c.suggestions} |`).join('\n')}\n`
+      : '';
+
+    const errorTagsMd = errorTagDistribution.length > 0
+      ? `\n\n### 🏷️ 本周错因分布\n${errorTagDistribution.map(({ tag, count }) => `- **${tag}**：${count}题`).join('\n')}\n`
+      : '';
+
     return {
-      content: `📊 **本周复习复盘报告**\n\n📈 **核心指标**\n• 计划学习时长：${plannedTotal}h，实际：${actualTotal}h（${hourRate}%）\n• 任务完成：${tasksDone}/${tasksTotal}（${completionRate}%）\n• 知识点平均掌握度：${masteryAvg}%\n• 错题本：共 ${wrongTotal} 题，已复习 ${wrongReviewed} 题\n\n${goodParts.length ? '🌟 **做得好的地方**\n' + goodParts.join('\n') + '\n\n' : ''}${badParts.length ? '💪 **需要加强**\n' + badParts.join('\n') + '\n\n' : ''}📈 **下一阶段建议**\n${suggestions.join('\n')}\n\n继续加油，每天进步一点点！💪🎓`,
+      content: `📊 **本周复习复盘报告**\n\n📈 **核心指标**\n• 计划学习时长：${plannedTotal}h，实际：${actualTotal}h（${hourRate}%）\n• 任务完成：${tasksDone}/${tasksTotal}（${completionRate}%）\n• 知识点平均掌握度：${masteryAvg}%\n• 错题本：共 ${wrongTotal} 题，已复习 ${wrongReviewed} 题\n\n${goodParts.length ? '🌟 **做得好的地方**\n' + goodParts.join('\n') + '\n\n' : ''}${badParts.length ? '💪 **需要加强**\n' + badParts.join('\n') + '\n\n' : ''}${topChaptersMd}${errorTagsMd}\n📈 **下一阶段建议**\n${suggestions.join('\n')}\n\n继续加油，每天进步一点点！💪🎓`,
       type: 'chart',
-      payload: { progress: recent, masteryAvg, completionRate, hourRate },
+      payload: {
+        progress: recent,
+        masteryAvg,
+        completionRate,
+        hourRate,
+        topErrorChapters,
+        errorTagDistribution,
+      },
       suggestions: ['📋 调整下周计划', '🎯 立刻开始薄弱知识点抽查', '📚 复习今天的错题'],
       newFlow: { flow: 'idle', step: 0, context: {} },
     };

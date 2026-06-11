@@ -118,3 +118,57 @@ export function answerScore(userAnswer: string, correctContent: string): number 
   const score = Math.round((hit / keywords.length) * 100);
   return Math.min(100, Math.max(20, score + (similarText(userAnswer, correctContent) * 20)));
 }
+
+export function segmentChinese(text: string): string[] {
+  const cleanText = text.replace(/[，。；、,.\s\n\r\t!?！？：:（）()《》""''\-—]+/g, ' ');
+  const words: string[] = [];
+  const tokens = cleanText.split(/\s+/).filter(Boolean);
+  for (const token of tokens) {
+    let i = 0;
+    while (i < token.length) {
+      let found = false;
+      for (let len = Math.min(4, token.length - i); len >= 2; len--) {
+        const slice = token.slice(i, i + len);
+        if (/^[\u4e00-\u9fa5a-zA-Z]+$/.test(slice)) {
+          words.push(slice);
+          i += len;
+          found = true;
+          break;
+        }
+      }
+      if (!found) i++;
+    }
+  }
+  return [...new Set(words)];
+}
+
+export function analyzeKeywords(userAnswer: string, keywords: string[]): { hit: string[]; missed: string[]; hitRate: number } {
+  const userTokens = segmentChinese(userAnswer);
+  const hit: string[] = [];
+  const missed: string[] = [];
+  for (const kw of keywords) {
+    const kwClean = kw.trim();
+    if (!kwClean) continue;
+    let isHit = false;
+    for (const token of userTokens) {
+      if (token.includes(kwClean) || kwClean.includes(token)) {
+        isHit = true;
+        break;
+      }
+    }
+    if (!isHit) {
+      const kwTokens = segmentChinese(kwClean);
+      if (kwTokens.length === 0 || userAnswer.includes(kwClean)) {
+        isHit = true;
+      }
+    }
+    if (isHit) {
+      hit.push(kwClean);
+    } else {
+      missed.push(kwClean);
+    }
+  }
+  const total = hit.length + missed.length;
+  const hitRate = total === 0 ? 0 : hit.length / total;
+  return { hit, missed, hitRate };
+}

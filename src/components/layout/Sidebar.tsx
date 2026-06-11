@@ -1,4 +1,4 @@
-import { ClipboardList, BookX, Brain, Target, BarChart3, FileText, CalendarDays } from 'lucide-react';
+import { ClipboardList, BookX, Brain, Target, BarChart3, FileText, CalendarDays, TrendingUp } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import { formatDate, getWeekDates, isToday } from '@/utils/dateUtils';
 
@@ -64,6 +64,15 @@ export default function Sidebar() {
 
   const todayReviewWrong = wrongQuestions.filter(wq => isToday(wq.nextReviewDate));
 
+  const thisWeekWrong = wrongQuestions.filter(wq => weekDates.includes(formatDate(new Date(wq.addedAt))));
+  const chapterStats: Record<string, number> = {};
+  thisWeekWrong.forEach(wq => {
+    chapterStats[wq.chapter] = (chapterStats[wq.chapter] || 0) + 1;
+  });
+  const topWeekChapters = Object.entries(chapterStats)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 2);
+
   const statCards = [
     {
       icon: ClipboardList,
@@ -78,7 +87,7 @@ export default function Sidebar() {
       icon: BookX,
       label: '错题总数',
       value: wrongTotal,
-      sub: wrongTotal > 0 ? `${todayReviewWrong.length} 道待复习` : '再接再厉',
+      sub: `今日待复习 ${todayReviewWrong.length} 道`,
       gradient: 'from-rose-500 to-rose-600',
       bg: 'bg-rose-50',
       iconColor: 'text-rose-600',
@@ -131,6 +140,40 @@ export default function Sidebar() {
           </div>
         ))}
       </div>
+
+      {topWeekChapters.length > 0 && (
+        <div className="glass-panel p-3 shrink-0">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5 text-amber-500" />
+              <span className="text-xs font-semibold text-slate-700">本周易错章节</span>
+            </div>
+            <button
+              onClick={() => setActiveModal('progress')}
+              className="text-[10px] text-brand-600 hover:text-brand-700 font-medium"
+            >
+              查看详情 →
+            </button>
+          </div>
+          <div className="space-y-1.5">
+            {topWeekChapters.map(([chapter, count], idx) => (
+              <div key={chapter} className="flex items-center justify-between p-2 rounded-lg bg-gradient-to-r from-amber-50/80 to-rose-50/50 border border-amber-100/60">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className={`w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center shrink-0 ${
+                    idx === 0 ? 'bg-rose-500 text-white' : 'bg-amber-500 text-white'
+                  }`}>
+                    {idx + 1}
+                  </span>
+                  <span className="text-xs text-slate-700 font-medium truncate">{chapter}</span>
+                </div>
+                <span className="text-[10px] font-bold text-rose-600 bg-rose-100 px-1.5 py-0.5 rounded-full shrink-0 ml-2">
+                  {count}题
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="glass-panel flex-1 min-h-0 flex flex-col overflow-hidden">
         <div className="px-4 py-3 border-b border-brand-100/60 flex items-center justify-between shrink-0">

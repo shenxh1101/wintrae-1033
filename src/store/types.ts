@@ -4,6 +4,10 @@ export type FlowType = 'plan' | 'qa' | 'wrongbook' | 'recite' | 'quiz' | 'review
 export type Priority = 'high' | 'medium' | 'low';
 export type ModalType = 'wrongbook' | 'progress' | 'plan' | 'recite' | 'quiz' | null;
 
+export type ErrorTagType = '概念混淆' | '审题失误' | '计算错误' | '记忆疏漏' | '方法不当' | '时间不足' | '其他';
+export const ERROR_TAGS: ErrorTagType[] = ['概念混淆', '审题失误', '计算错误', '记忆疏漏', '方法不当', '时间不足', '其他'];
+export type QuizTimeMode = 'unlimited' | 'per_question' | 'total';
+
 export interface Message {
   id: string;
   role: Role;
@@ -44,6 +48,8 @@ export interface WrongQuestion {
   reviewCount: number;
   nextReviewDate: string;
   similarQuestions?: SimilarQuestion[];
+  errorTags?: string[];
+  knowledgePointId?: string;
 }
 
 export interface SimilarQuestion {
@@ -51,6 +57,7 @@ export interface SimilarQuestion {
   question: string;
   options?: string[];
   answer: string;
+  targetErrorTag?: string;
 }
 
 export interface KnowledgePoint {
@@ -62,6 +69,8 @@ export interface KnowledgePoint {
   mastery: number;
   lastReviewAt?: number;
   nextReviewDate?: string;
+  keywords?: string[];
+  reviewCount?: number;
 }
 
 export interface Chapter {
@@ -97,6 +106,9 @@ export interface QuizRecord {
   timeSpent: number;
   completedAt: number;
   questions: QuizQuestion[];
+  timeLimitMode?: 'unlimited' | 'per_question' | 'total';
+  timeLimitSeconds?: number;
+  wrongByChapter?: { chapter: string; count: number; knowledgePointIds: string[] }[];
 }
 
 export interface WeeklyProgress {
@@ -142,6 +154,7 @@ export interface AppActions {
   addWrongQuestion: (q: WrongQuestion) => void;
   reviewWrongQuestion: (id: string) => void;
   updateKnowledgeMastery: (id: string, delta: number) => void;
+  updateKnowledgeReviewDate: (id: string, score: number) => void;
   addQuizRecord: (record: QuizRecord) => void;
   setActiveModal: (modal: ModalType) => void;
   setCurrentQuiz: (quiz: QuizQuestion[] | null) => void;
@@ -151,6 +164,9 @@ export interface AppActions {
   setSelectedChapters: (chapters: string[]) => void;
   resetAll: () => void;
   addMockData: () => void;
+  updateWeeklyProgress: (date: string, patch: Partial<WeeklyProgress>) => void;
+  getTodayPlannedMinutes: () => number;
+  getTodayCompletedMinutes: () => number;
 }
 
 export type AppStore = AppState & AppActions;
